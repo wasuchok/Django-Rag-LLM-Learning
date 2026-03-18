@@ -14,4 +14,4 @@ class KnowledgeDocument(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return f"{self.role}: {self.content[:30]}"
+        return self.title

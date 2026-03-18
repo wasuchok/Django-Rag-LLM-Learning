@@ -3,7 +3,7 @@ import uuid
 import requests
 import chromadb
 
-from typing import List
+from typing import List, Dict
 from django.conf import settings
 from ..models import KnowledgeDocument
 
@@ -71,13 +71,63 @@ def index_document(document: KnowledgeDocument):
             embeddings=embeddings
         )
 
-def search_knowledge(query: str, top_k : int =  3) -> List[str]:
+def normalize_text(text : str) -> str:
+    return " ".join((text or "").strip().lower().split())
+
+def deduplicate_results(items : List[Dict]) -> List[Dict]:
+    seen = set()
+    unique_items = []
+
+    for item in items:
+        metadata = item.get("metadata", {}) or {}
+
+        key = (
+            metadata.get("document_id"),
+            metadata.get("chunk_index"),
+            normalize_text(item.get("content", ""))
+        )
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+        unique_items.append(item)
+
+    return unique_items
+
+def search_knowledge(query: str, top_k : int =  5, max_distance: float = 1.2) -> List[Dict]:
     query_embedding =  embed_text(query)
 
     result =  collection.query(
         query_embeddings=[query_embedding],
-        n_results=top_k
+        n_results=top_k,
+        include=["documents", "metadatas", "distances"]
     )
 
-    docs =  result.get("documents", [[]])[0]
-    return docs
+    documents = result.get("documents", [[]])[0]
+    metadatas = result.get("metadatas", [[]])[0]
+    distances = result.get("distances", [[]])[0]
+
+    items = []
+    for i in range(len(documents)):
+        distance = distances[i] if i < len(distances) else None
+
+        if distance is not None and distance > max_distance:
+            continue
+
+        items.append({
+            "content" : documents[i],
+            "metadata" : metadatas[i] or {},
+            "distance" : distance
+        })
+
+        items = deduplicate_results(items)
+
+        items.sort(key=lambda x: x["distance"] if x["distance"] is not None else 9999)
+
+        return items
+    
+def delete_document_from_index(document_id : int) :
+    collection.delete(
+        where={"document_id" : document_id}
+    )

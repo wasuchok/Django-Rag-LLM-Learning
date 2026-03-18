@@ -68,13 +68,24 @@ def get_conversation_history(conversation_id: str, limit: int = 6) -> List[Dict[
     return history
 
 
-def build_messages(history, user_message, strict=False, knowledge_text=""):
+def build_messages(history: List[Dict[str, str]], user_message : str, strict : bool = False, knowledge_text : str = "") -> List[Dict[str, str]]:
     system_prompt = """
     คุณคือผู้ช่วย AI ภาษาไทย
-    ให้ตอบจากข้อมูลอ้างอิงที่ได้รับก่อน
-    ถ้าไม่มีข้อมูลอ้างอิงพอ ให้บอกตามตรงว่าไม่มีข้อมูลเพียงพอ
-    ตอบเป็นภาษาไทย กระชับ และชัดเจน
+
+    กฎที่ต้องทำตาม:
+    1. ตอบเป็นภาษาไทยเท่านั้น
+    2. ถ้ามีข้อมูลอ้างอิง ให้ตอบจากข้อมูลอ้างอิงก่อน
+    3. ถ้าไม่มีข้อมูลอ้างอิงพอ ให้บอกว่าไม่มีข้อมูลเพียงพอ
+    4. ห้ามแต่งข้อมูลเพิ่มเอง
+    5. ตอบสั้น กระชับ เข้าใจง่าย
     """
+
+    if strict:
+        system_prompt += """
+ข้อบังคับเพิ่มเติม:
+- ห้ามตอบเป็นภาษาจีนหรือภาษาอังกฤษ
+- คำตอบสุดท้ายต้องเป็นภาษาไทย
+"""
 
     messages = [{"role": "system", "content": system_prompt}]
 
@@ -127,29 +138,80 @@ def extract_reply(data: dict) -> str:
 
 def generate_reply_with_history(conversation_id: str, user_message: str) -> str:
     history = get_conversation_history(conversation_id, limit=6)
-    knowledge_chunks = search_knowledge(user_message, top_k=3)
-    knowledge_text = "\n\n".join(knowledge_chunks) if knowledge_chunks else ""
-    # รอบแรก
-    messages = build_messages(history, user_message, strict=False, knowledge_text=knowledge_text)
+
+    knowledge_items = search_knowledge(user_message, top_k=5, max_distance=1.2)
+    knowledge_text = build_knowledge_context(knowledge_items)
+    source_items = clean_sources(knowledge_items)
+
+    messages = build_messages(
+        history, 
+        user_message, 
+        strict=False, 
+        knowledge_text=knowledge_text
+    )
+
     data = call_ollama(messages)
     reply = extract_reply(data)
 
-    # ถ้าแค่โหลด model
     if not reply and data.get("done_reason") == "load":
         time.sleep(1)
         data = call_ollama(messages)
         reply = extract_reply(data)
 
-    # ถ้าคำตอบไม่ดี ให้ retry พร้อม prompt เข้มขึ้น
     if is_bad_reply(reply):
-        strict_messages = build_messages(history, user_message, strict=True)
+        strict_messages = build_messages(
+            history, 
+            user_message, 
+            strict=True, 
+            knowledge_text=knowledge_text
+        )
+
         data = call_ollama(strict_messages)
         retry_reply = extract_reply(data)
 
         if retry_reply and not is_bad_reply(retry_reply):
-            return retry_reply
-
+            return {
+                "reply" : retry_reply,
+                "sources" : source_items
+            }
+        
     if reply and not is_bad_reply(reply):
-        return reply
+        return {
+            "reply" : reply,
+            "sources" : source_items
+        }
+    
+    return {
+        "reply" : "ขออภัยครับ ลองพิมพ์ใหม่อีกครั้งได้เลย",
+        "sources" : source_items
+    }
 
-    return "ขออภัย ตอบใหม่อีกครั้งเป็นภาษาไทยสั้น ๆ ได้ไหม"
+def build_knowledge_context(knowledge_items : List[Dict]) -> str:
+    if not knowledge_items:
+        return ""
+    
+    parts = []
+    for item in knowledge_items:
+        content = item.get("content", "").strip()
+        metadata = item.get("metadata", {})
+        title = metadata.get("title", "ไม่ระบุชื่อ")
+
+        parts.append(f"[แหล่งข้อมูล : {title}]\n{content}")
+
+    return "\n\n".join(parts)
+
+def clean_sources(knowledge_items : List[Dict]) -> List[Dict]:
+    cleaned = []
+
+    for item in knowledge_items:
+        metadata = item.get("metadata", {}) or {}
+
+        cleaned.append({
+            "title" : metadata.get("title"),
+            "source" : metadata.get("source"),
+            "chunk_index" : metadata.get("chunk_index"),
+            "document_id" : metadata.get("document_id"),
+            "distance" : item.get("distance")
+        })
+
+    return cleaned
