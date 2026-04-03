@@ -204,18 +204,49 @@ def get_uploaded_files(message: cl.Message) -> list[dict[str, str]]:
 def build_upload_summary(upload_result: dict, visibility: str) -> str:
     successes = upload_result["successes"]
     errors = upload_result["errors"]
+    file_summaries = upload_result.get("file_summaries") or []
     visibility_label = get_knowledge_visibility_label(visibility)
 
     lines = []
 
     if successes:
+        total_documents = len(successes)
+        total_files = len(file_summaries) or 1
         lines.append(
-            f"เพิ่มเข้าฐานความรู้แบบ{visibility_label}แล้ว {len(successes)} ไฟล์"
+            f"เพิ่มเข้าฐานความรู้แบบ{visibility_label}แล้ว {total_documents} เอกสาร จาก {total_files} ไฟล์"
         )
-        for item in successes:
-            lines.append(
-                f"- {item['title']} (เอกสาร #{item['document_id']}, {item['characters']} ตัวอักษร, {item['visibility_label']})"
-            )
+
+        for file_summary in file_summaries:
+            file_name = file_summary.get("file_name", "-")
+            mode = file_summary.get("mode")
+            document_count = int(file_summary.get("document_count") or 0)
+            created_count = int(file_summary.get("created_count") or 0)
+            updated_count = int(file_summary.get("updated_count") or 0)
+            skipped_count = int(file_summary.get("skipped_count") or 0)
+            sheet_name = file_summary.get("sheet_name")
+
+            if mode == "xlsx_history_rows":
+                lines.append(
+                    f"- {file_name}: ชีต {sheet_name or '-'} -> {document_count} เอกสาร "
+                    f"(สร้างใหม่ {created_count}, อัปเดต {updated_count}, ข้าม {skipped_count})"
+                )
+            else:
+                lines.append(
+                    f"- {file_name}: {document_count} เอกสาร "
+                    f"(สร้างใหม่ {created_count}, อัปเดต {updated_count}, ข้าม {skipped_count})"
+                )
+
+        preview_items = successes[:8]
+        if preview_items:
+            lines.append("")
+            lines.append("ตัวอย่างเอกสารที่นำเข้า")
+            for item in preview_items:
+                lines.append(
+                    f"- {item['title']} (เอกสาร #{item['document_id']}, {item['characters']} ตัวอักษร, {item['visibility_label']}, {item.get('status', 'created')})"
+                )
+            remaining_count = len(successes) - len(preview_items)
+            if remaining_count > 0:
+                lines.append(f"- และอีก {remaining_count} เอกสาร")
 
     if errors:
         if lines:

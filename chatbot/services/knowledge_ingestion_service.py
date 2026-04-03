@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -9,6 +11,7 @@ from .knowledge_access_service import (
     normalize_knowledge_visibility,
 )
 from .rag_service import index_document
+from .xlsx_history_ingestion_service import ingest_history_workbook, summarize_file_ingestion
 
 TEXT_SUFFIXES = {
     ".txt",
@@ -23,6 +26,7 @@ TEXT_SUFFIXES = {
     ".yaml",
     ".yml",
 }
+XLSX_SUFFIXES = {".xlsx"}
 
 
 def read_text_file(file_path: Path) -> str:
@@ -60,7 +64,7 @@ def extract_file_content(file_path: Path) -> str:
         return read_text_file(file_path)
 
     raise ValueError(
-        "รองรับเฉพาะไฟล์ประเภท pdf, txt, md, csv, json, html, xml, yaml และ log"
+        "รองรับเฉพาะไฟล์ประเภท pdf, txt, md, csv, json, html, xml, yaml, log และ xlsx"
     )
 
 
@@ -80,16 +84,27 @@ def ingest_knowledge_file(
     if not path.exists():
         raise FileNotFoundError(f"ไม่พบไฟล์: {path}")
 
+    source_file_name = display_name or path.name
+    normalized_visibility = normalize_knowledge_visibility(
+        visibility,
+        user_id=user_id,
+    )
+    suffix = path.suffix.lower()
+
+    if suffix in XLSX_SUFFIXES:
+        return ingest_history_workbook(
+            path,
+            display_name=source_file_name,
+            user_id=user_id,
+            visibility=normalized_visibility,
+        )
+
     content = extract_file_content(path).strip()
     if not content:
         raise ValueError("ไม่พบข้อความที่นำมาใช้งานได้ในไฟล์นี้")
 
     title = build_document_title(path)
-    source = display_name or path.name
-    normalized_visibility = normalize_knowledge_visibility(
-        visibility,
-        user_id=user_id,
-    )
+    source = source_file_name
 
     with transaction.atomic():
         document = KnowledgeDocument.objects.create(
@@ -101,14 +116,21 @@ def ingest_knowledge_file(
         )
         index_document(document)
 
-    return {
-        "document_id": document.id,
-        "title": document.title,
-        "source": document.source,
-        "characters": len(content),
-        "visibility": document.visibility,
-        "visibility_label": get_knowledge_visibility_label(document.visibility),
-    }
+    return summarize_file_ingestion(
+        file_name=source_file_name,
+        documents=[
+            {
+                "document_id": document.id,
+                "title": document.title,
+                "source": document.source,
+                "characters": len(content),
+                "visibility": document.visibility,
+                "visibility_label": get_knowledge_visibility_label(document.visibility),
+                "status": "created",
+            }
+        ],
+        mode="single_document",
+    )
 
 
 def ingest_knowledge_files(
@@ -116,9 +138,10 @@ def ingest_knowledge_files(
     *,
     user_id: Optional[int] = None,
     visibility: str | None = None,
-) -> Dict[str, List[Dict[str, Any]]]:
+) -> Dict[str, Any]:
     successes: List[Dict[str, Any]] = []
     errors: List[Dict[str, Any]] = []
+    file_summaries: List[Dict[str, Any]] = []
 
     for file_info in files:
         path = file_info["path"]
@@ -131,7 +154,8 @@ def ingest_knowledge_files(
                 user_id=user_id,
                 visibility=visibility,
             )
-            successes.append(result)
+            file_summaries.append(result)
+            successes.extend(result.get("documents", []))
         except Exception as exc:
             errors.append(
                 {
@@ -143,4 +167,5 @@ def ingest_knowledge_files(
     return {
         "successes": successes,
         "errors": errors,
+        "file_summaries": file_summaries,
     }
