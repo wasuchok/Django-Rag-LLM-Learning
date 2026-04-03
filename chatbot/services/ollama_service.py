@@ -22,13 +22,33 @@ RAG_ONLY_MODE = settings.RAG_ONLY_MODE
 RAG_INCLUDE_CHAT_HISTORY = settings.RAG_INCLUDE_CHAT_HISTORY
 RAG_SEARCH_TOP_K = settings.RAG_SEARCH_TOP_K
 
-RAG_ONLY_NO_CONTEXT_REPLY = (
-    "ไม่พบข้อมูลที่เกี่ยวข้องในฐานความรู้ จึงตอบได้เพียงว่าไม่มีข้อมูลเพียงพอครับ"
-)
-RAG_ONLY_GENERATION_ERROR_REPLY = (
-    "ขออภัยครับ ระบบถูกตั้งให้ตอบจากฐานความรู้เท่านั้น "
-    "แต่ยังสรุปคำตอบจากข้อมูลอ้างอิงที่พบไม่ได้ กรุณาลองถามใหม่หรือเพิ่มข้อมูลในฐานความรู้ครับ"
-)
+DEFAULT_RESPONSE_LANGUAGE = "th"
+LANGUAGE_LABELS = {
+    "th": "ภาษาไทย",
+    "en": "ภาษาอังกฤษ",
+    "ja": "ภาษาญี่ปุ่น",
+}
+RAG_ONLY_NO_CONTEXT_REPLIES = {
+    "th": "ไม่พบข้อมูลที่เกี่ยวข้องในฐานความรู้ จึงตอบได้เพียงว่าไม่มีข้อมูลเพียงพอครับ",
+    "en": "I could not find relevant information in the knowledge base, so I do not have enough information to answer.",
+    "ja": "知識ベースに関連する情報が見つからなかったため、回答に必要な情報が不足しています。",
+}
+RAG_ONLY_GENERATION_ERROR_REPLIES = {
+    "th": (
+        "ขออภัยครับ ระบบถูกตั้งให้ตอบจากฐานความรู้เท่านั้น "
+        "แต่ยังสรุปคำตอบจากข้อมูลอ้างอิงที่พบไม่ได้ กรุณาลองถามใหม่หรือเพิ่มข้อมูลในฐานความรู้ครับ"
+    ),
+    "en": (
+        "Sorry, this system is configured to answer from the knowledge base first, "
+        "but I could not produce a reliable answer from the retrieved references. "
+        "Please try again or add more information to the knowledge base."
+    ),
+    "ja": (
+        "申し訳ありません。このシステムはまず知識ベースに基づいて回答するよう設定されていますが、"
+        "取得した参照情報から信頼できる回答を生成できませんでした。"
+        "質問を変えるか、知識ベースに情報を追加してください。"
+    ),
+}
 FOLLOW_UP_PREFIXES = (
     "แล้ว",
     "งั้น",
@@ -48,6 +68,46 @@ CONTEXT_DEPENDENT_HINT_PATTERN = re.compile(
     r"(กี่วัน|กี่ปี|กี่บาท|เท่าไหร่|เท่าไร|เกินมากี่|เกินกี่|เหลือกี่|ได้กี่|"
     r"ได้ไหม|ได้มั้ย|ยังไง|อย่างไร|เป็นอะไรไหม|ต้องยื่น|ต้องทำ|ต้องใช้)"
 )
+THAI_CHAR_PATTERN = re.compile(r"[\u0E00-\u0E7F]")
+JAPANESE_CHAR_PATTERN = re.compile(r"[\u3040-\u30FF]")
+LATIN_CHAR_PATTERN = re.compile(r"[A-Za-z]")
+
+ENGLISH_RESPONSE_HINTS = (
+    "ตอบเป็นภาษาอังกฤษ",
+    "ตอบภาษาอังกฤษ",
+    "ตอบอังกฤษ",
+    "เป็นภาษาอังกฤษ",
+    "in english",
+    "answer in english",
+    "reply in english",
+    "respond in english",
+    "english please",
+    "英語で",
+)
+JAPANESE_RESPONSE_HINTS = (
+    "ตอบเป็นภาษาญี่ปุ่น",
+    "ตอบภาษาญี่ปุ่น",
+    "ตอบญี่ปุ่น",
+    "เป็นภาษาญี่ปุ่น",
+    "in japanese",
+    "answer in japanese",
+    "reply in japanese",
+    "respond in japanese",
+    "japanese please",
+    "日本語で",
+)
+THAI_RESPONSE_HINTS = (
+    "ตอบเป็นภาษาไทย",
+    "ตอบภาษาไทย",
+    "ตอบไทย",
+    "เป็นภาษาไทย",
+    "in thai",
+    "answer in thai",
+    "reply in thai",
+    "respond in thai",
+    "thai please",
+    "タイ語で",
+)
 
 
 def build_ollama_payload(
@@ -65,24 +125,99 @@ def build_ollama_payload(
     }
 
 
-def has_cjk(text: str) -> bool:
-    # จีน ญี่ปุ่น เกาหลี
-    return bool(re.search(r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]", text))
+def contains_thai(text: str) -> bool:
+    return bool(THAI_CHAR_PATTERN.search(text or ""))
 
 
-def too_much_latin(text: str) -> bool:
-    latin_chars = re.findall(r"[A-Za-z]", text)
-    thai_chars = re.findall(r"[\u0E00-\u0E7F]", text)
+def contains_japanese(text: str) -> bool:
+    raw_text = text or ""
+    return bool(JAPANESE_CHAR_PATTERN.search(raw_text) or "日本語" in raw_text)
 
-    return len(latin_chars) > 40 and len(thai_chars) < 10
+
+def contains_latin(text: str) -> bool:
+    return bool(LATIN_CHAR_PATTERN.search(text or ""))
+
+
+def detect_explicit_response_language(text: str) -> str | None:
+    normalized = normalize_query_text(text)
+    raw_text = text or ""
+
+    if any(hint in normalized for hint in THAI_RESPONSE_HINTS) or "タイ語で" in raw_text:
+        return "th"
+    if any(hint in normalized for hint in ENGLISH_RESPONSE_HINTS):
+        return "en"
+    if any(hint in normalized for hint in JAPANESE_RESPONSE_HINTS):
+        return "ja"
+
+    return None
+
+
+def detect_response_language_from_text(text: str) -> str:
+    explicit_language = detect_explicit_response_language(text)
+    if explicit_language:
+        return explicit_language
+
+    if contains_thai(text):
+        return "th"
+    if contains_japanese(text):
+        return "ja"
+    if contains_latin(text):
+        return "en"
+    return DEFAULT_RESPONSE_LANGUAGE
+
+
+def detect_response_language(
+    user_message: str,
+    history: List[Dict[str, str]] | None = None,
+) -> str:
+    detected_language = detect_response_language_from_text(user_message)
+    if detected_language != DEFAULT_RESPONSE_LANGUAGE:
+        return detected_language
+
+    if contains_thai(user_message):
+        return "th"
+
+    if history and looks_like_followup_question(user_message):
+        anchor_message = get_followup_anchor_message(history, user_message)
+        if anchor_message:
+            return detect_response_language_from_text(anchor_message)
+
+    return detected_language
+
+
+def strip_response_language_directives(text: str) -> str:
+    raw_text = (text or "").strip()
+    stripped = raw_text
+
+    replacements = [
+        r"(?:ตอบ|สรุป|อธิบาย)\s*(?:เป็น)?\s*ภาษาอังกฤษ",
+        r"(?:ตอบ|สรุป|อธิบาย)\s*(?:เป็น)?\s*อังกฤษ",
+        r"(?:ตอบ|สรุป|อธิบาย)\s*(?:เป็น)?\s*ภาษาญี่ปุ่น",
+        r"(?:ตอบ|สรุป|อธิบาย)\s*(?:เป็น)?\s*ญี่ปุ่น",
+        r"(?:ตอบ|สรุป|อธิบาย)\s*(?:เป็น)?\s*ภาษาไทย",
+        r"(?:ตอบ|สรุป|อธิบาย)\s*(?:เป็น)?\s*ไทย",
+        r"\b(?:answer|reply|respond)\s+in\s+english\b",
+        r"\b(?:answer|reply|respond)\s+in\s+japanese\b",
+        r"\b(?:answer|reply|respond)\s+in\s+thai\b",
+        r"\bin\s+english\b",
+        r"\bin\s+japanese\b",
+        r"\bin\s+thai\b",
+        r"英語で",
+        r"日本語で",
+        r"タイ語で",
+    ]
+
+    for pattern in replacements:
+        stripped = re.sub(pattern, "", stripped, flags=re.IGNORECASE)
+
+    stripped = re.sub(r"\s{2,}", " ", stripped).strip(" ,.;:-")
+    return stripped or raw_text
 
 
 def is_bad_reply(text: str) -> bool:
     if not text or not text.strip():
         return True
-    if has_cjk(text):
-        return True
-    if too_much_latin(text):
+    if text.strip().startswith("Ollama error:"):
         return True
     return False
 
@@ -133,7 +268,7 @@ def get_conversation_history(
         if content.startswith("Ollama error:"):
             continue
 
-        # ข้าม assistant reply ที่ปนจีน/เพี้ยน
+        # ข้าม assistant reply ที่ว่างหรือเป็นข้อความ error
         if row.role == "assistant" and is_bad_reply(content):
             continue
 
@@ -274,7 +409,7 @@ def prioritize_knowledge_items_by_topic(
 
 
 def build_retrieval_query(history: List[Dict[str, str]], user_message: str) -> str:
-    current_message = (user_message or "").strip()
+    current_message = strip_response_language_directives((user_message or "").strip())
     if not current_message:
         return ""
 
@@ -294,15 +429,36 @@ def has_grounded_knowledge(prepared: Dict[str, object]) -> bool:
     return bool(knowledge_items and knowledge_text)
 
 
+def get_response_language_label(language: str) -> str:
+    return LANGUAGE_LABELS.get(language, LANGUAGE_LABELS[DEFAULT_RESPONSE_LANGUAGE])
+
+
+def build_no_context_reply(language: str) -> str:
+    return RAG_ONLY_NO_CONTEXT_REPLIES.get(
+        language,
+        RAG_ONLY_NO_CONTEXT_REPLIES[DEFAULT_RESPONSE_LANGUAGE],
+    )
+
+
+def build_generation_error_reply(language: str) -> str:
+    return RAG_ONLY_GENERATION_ERROR_REPLIES.get(
+        language,
+        RAG_ONLY_GENERATION_ERROR_REPLIES[DEFAULT_RESPONSE_LANGUAGE],
+    )
+
+
 def build_messages(
     history: List[Dict[str, str]],
     user_message: str,
     strict: bool = False,
     knowledge_text: str = "",
+    response_language: str = DEFAULT_RESPONSE_LANGUAGE,
 ) -> List[Dict[str, str]]:
+    language_label = get_response_language_label(response_language)
+
     if knowledge_text:
-        system_prompt = """
-    คุณคือผู้ช่วย AI ภาษาไทยที่ต้องตอบโดยยึดข้อมูลจากฐานความรู้เป็นหลัก
+        system_prompt = f"""
+    คุณคือผู้ช่วย AI หลายภาษาที่ต้องตอบโดยยึดข้อมูลจากฐานความรู้เป็นหลัก
 
     กฎที่ต้องทำตาม:
     1. ใช้เฉพาะข้อมูลที่อยู่ในส่วน "ข้อมูลอ้างอิง" เท่านั้นเป็นหลักฐานในการตอบ
@@ -310,28 +466,28 @@ def build_messages(
     3. ถ้ามีประวัติสนทนาถูกส่งมา ให้ใช้เพื่อช่วยเข้าใจคำถามปัจจุบันเท่านั้น ไม่ใช่แหล่งข้อมูลอ้างอิง
     4. ถ้าข้อมูลอ้างอิงไม่มีคำตอบชัดเจน หรือไม่ครอบคลุมคำถาม ให้ตอบว่าไม่มีข้อมูลเพียงพอในฐานความรู้
     5. ห้ามเดา ห้ามแต่ง ห้ามสรุปเกินกว่าที่ข้อมูลอ้างอิงระบุไว้
-    6. ตอบสั้น กระชับ ชัดเจน และเป็นภาษาไทยเท่านั้น
+    6. ตอบสั้น กระชับ ชัดเจน และใช้{language_label}เท่านั้น
     7. ตอบเฉพาะสิ่งที่ผู้ใช้ถาม ห้ามดึงรายละเอียดเรื่องอื่นที่ไม่ได้ถามมาเอง
     8. ถ้าคำถามเกี่ยวกับจำนวน ส่วนเกิน หรือการคำนวณ ให้คำนวณจากข้อมูลอ้างอิงโดยตรงและสรุปผลลัพธ์ให้ชัดเจน
-    9. ถ้าข้อมูลอ้างอิงมีข้อมูล "ผู้ปฏิบัติงาน" หรือ "Worker" ให้ระบุในคำตอบด้วยเสมอโดยใช้คำว่า "ผู้ปฏิบัติงาน"
+    9. ถ้าข้อมูลอ้างอิงมีข้อมูล "ผู้ปฏิบัติงาน" หรือ "Worker" ให้ระบุในคำตอบด้วยเสมอ โดยใช้ป้ายกำกับที่เหมาะกับ{language_label}
     """
     else:
-        system_prompt = """
-    คุณคือผู้ช่วย AI ภาษาไทย
+        system_prompt = f"""
+    คุณคือผู้ช่วย AI หลายภาษา
 
     กฎที่ต้องทำตาม:
     1. ถ้ามีประวัติสนทนาถูกส่งมา ให้ใช้เพื่อช่วยเข้าใจคำถามปัจจุบันเท่านั้น
-    2. ตอบสั้น กระชับ ชัดเจน และเป็นภาษาไทยเท่านั้น
+    2. ตอบสั้น กระชับ ชัดเจน และใช้{language_label}เท่านั้น
     3. ตอบเฉพาะสิ่งที่ผู้ใช้ถาม ห้ามดึงรายละเอียดเรื่องอื่นที่ไม่ได้ถามมาเอง
     4. ถ้าคำถามเกี่ยวกับจำนวน ส่วนเกิน หรือการคำนวณ ให้สรุปผลลัพธ์ที่คำนวณได้ให้ชัดเจน
     5. หากไม่มั่นใจจริง ๆ ให้บอกตามตรงว่าไม่แน่ใจ แทนการแต่งข้อมูล
     """
 
     if strict and knowledge_text:
-        system_prompt += """
+        system_prompt += f"""
 ข้อบังคับเพิ่มเติม:
-- ห้ามตอบเป็นภาษาจีนหรือภาษาอังกฤษ เว้นแต่เป็นชื่อเฉพาะที่อยู่ในข้อมูลอ้างอิง
-- คำตอบสุดท้ายต้องเป็นภาษาไทย
+- คำตอบสุดท้ายต้องเป็น{language_label}
+- อย่าสลับไปใช้ภาษาอื่น เว้นแต่เป็นชื่อเฉพาะ รหัสชิ้นส่วน หรือข้อความที่อยู่ในข้อมูลอ้างอิง
 - ถ้าไม่มีข้อมูลพอ ให้ปฏิเสธอย่างสุภาพแทนการคาดเดา
 """
 
@@ -403,6 +559,7 @@ def prepare_reply_generation(
         exclude_message_id=exclude_message_id,
         before_message_id=before_message_id,
     )
+    response_language = detect_response_language(user_message, history)
     retrieval_query = build_retrieval_query(history, user_message)
     followup_anchor_message = ""
     followup_topic_tokens: List[str] = []
@@ -442,6 +599,7 @@ def prepare_reply_generation(
 
     return {
         "history": history,
+        "response_language": response_language,
         "retrieval_query": retrieval_query,
         "followup_anchor_message": followup_anchor_message,
         "followup_topic_tokens": followup_topic_tokens,
@@ -459,8 +617,11 @@ def should_block_for_missing_knowledge(prepared: Dict[str, object]) -> bool:
 
 
 def build_missing_knowledge_result(prepared: Dict[str, object]) -> Dict[str, object]:
+    response_language = str(
+        prepared.get("response_language") or DEFAULT_RESPONSE_LANGUAGE
+    )
     return {
-        "reply": RAG_ONLY_NO_CONTEXT_REPLY,
+        "reply": build_no_context_reply(response_language),
         "sources": prepared.get("sources", []),
     }
 
@@ -562,6 +723,9 @@ async def stream_reply_with_history(
     history = prepared["history"]
     knowledge_text = prepared["knowledge_text"]
     source_items = prepared["sources"]
+    response_language = str(
+        prepared.get("response_language") or DEFAULT_RESPONSE_LANGUAGE
+    )
 
     if should_block_for_missing_knowledge(prepared):
         return build_missing_knowledge_result(prepared)
@@ -577,6 +741,7 @@ async def stream_reply_with_history(
         user_message,
         strict=has_grounded_knowledge(prepared),
         knowledge_text=knowledge_text,
+        response_language=response_language,
     )
 
     data = await stream_ollama_response(messages, collect_and_forward)
@@ -594,7 +759,7 @@ async def stream_reply_with_history(
         }
 
     return {
-        "reply": RAG_ONLY_GENERATION_ERROR_REPLY,
+        "reply": build_generation_error_reply(response_language),
         "sources": source_items,
     }
 
@@ -616,6 +781,9 @@ def generate_reply_with_history(
     history = prepared["history"]
     knowledge_text = prepared["knowledge_text"]
     source_items = prepared["sources"]
+    response_language = str(
+        prepared.get("response_language") or DEFAULT_RESPONSE_LANGUAGE
+    )
 
     if should_block_for_missing_knowledge(prepared):
         return build_missing_knowledge_result(prepared)
@@ -625,6 +793,7 @@ def generate_reply_with_history(
         user_message,
         strict=has_grounded_knowledge(prepared),
         knowledge_text=knowledge_text,
+        response_language=response_language,
     )
 
     data = call_ollama(messages)
@@ -653,7 +822,7 @@ def generate_reply_with_history(
         }
 
     return {
-        "reply": RAG_ONLY_GENERATION_ERROR_REPLY,
+        "reply": build_generation_error_reply(response_language),
         "sources": source_items,
     }
 
