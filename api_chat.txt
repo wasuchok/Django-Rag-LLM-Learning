@@ -1,0 +1,12 @@
+curl -X POST "http://127.0.0.1:8000/api/chat/" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "conversation_id": "web-user-001-room-1",
+    "message": "Sensor ชำรุด แก้ยังไง"
+  }'
+
+# CORS สำหรับเว็บภายนอกตั้งได้จาก .env เช่น
+# CORS_ALLOW_ALL_ORIGINS=true
+# หรือระบุเฉพาะ origin
+# CORS_ALLOW_ALL_ORIGINS=false
+# CORS_ALLOWED_ORIGINS=http://localhost:3000,http://192.168.1.50:3000

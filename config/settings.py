@@ -22,6 +22,15 @@ def get_int_env(name: str, default: int) -> int:
         return default
 
 
+def get_list_env(name: str, default: list[str] | None = None) -> list[str]:
+    value = os.getenv(name)
+    if value is None:
+        return list(default or [])
+
+    items = [item.strip() for item in value.split(",")]
+    return [item for item in items if item]
+
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -50,6 +59,27 @@ SQLSERVER_TRUSTED_CONNECTION = get_bool_env("SQLSERVER_TRUSTED_CONNECTION", Fals
 SQLSERVER_CONNECTION_TIMEOUT = max(1, get_int_env("SQLSERVER_CONNECTION_TIMEOUT", 30))
 SQLSERVER_CASES_SCHEMA = os.getenv("SQLSERVER_CASES_SCHEMA", "dbo").strip() or "dbo"
 SQLSERVER_CASES_TABLE = os.getenv("SQLSERVER_CASES_TABLE", "").strip()
+CORS_ALLOW_ALL_ORIGINS = get_bool_env("CORS_ALLOW_ALL_ORIGINS", True)
+CORS_ALLOWED_ORIGINS = get_list_env("CORS_ALLOWED_ORIGINS", [])
+CORS_ALLOW_CREDENTIALS = get_bool_env("CORS_ALLOW_CREDENTIALS", False)
+CORS_ALLOW_METHODS = get_list_env(
+    "CORS_ALLOW_METHODS",
+    ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+CORS_ALLOW_HEADERS = get_list_env(
+    "CORS_ALLOW_HEADERS",
+    [
+        "Accept",
+        "Accept-Language",
+        "Authorization",
+        "Content-Language",
+        "Content-Type",
+        "Origin",
+        "X-Requested-With",
+    ],
+)
+CORS_EXPOSE_HEADERS = get_list_env("CORS_EXPOSE_HEADERS", [])
+CORS_PREFLIGHT_MAX_AGE = max(0, get_int_env("CORS_PREFLIGHT_MAX_AGE", 86400))
 
 
 # Quick-start development settings - unsuitable for production
@@ -81,6 +111,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
+    'chatbot.middleware.SimpleCORSMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
