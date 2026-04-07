@@ -1,5 +1,6 @@
 from django.urls import path
 from .views import (
+    analyze_mt_job_card_problem_view,
     chat_with_local_model,
     health_check,
     import_mt_job_card_view,
@@ -24,6 +25,11 @@ urlpatterns = [
         "knowledge/sync/mt-job-cards/",
         sync_mt_job_card_view,
         name="knowledge-sync-mt-job-cards",
+    ),
+    path(
+        "analytics/mt-job-cards/problem-stats/",
+        analyze_mt_job_card_problem_view,
+        name="analytics-mt-job-cards-problem-stats",
     ),
 
     path("health/", health_check, name="health-check"),

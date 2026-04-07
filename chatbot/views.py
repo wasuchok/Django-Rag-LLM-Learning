@@ -15,6 +15,11 @@ from .services.knowledge_access_service import (
 )
 from .services.knowledge_management_service import list_knowledge_documents
 from .services.rag_service import index_document, delete_document_from_index
+from .services.sqlserver_job_card_analytics_service import (
+    analyze_mt_job_card_problem,
+    build_problem_analytics_source,
+    build_problem_analytics_summary,
+)
 from .services.sqlserver_job_card_ingestion_service import import_sqlserver_job_cards
 from .services.sqlserver_job_card_sync_service import (
     sync_sqlserver_job_cards_with_checkpoint,
@@ -76,6 +81,13 @@ def parse_optional_bool(value, field_name: str) -> bool:
         return False
 
     raise ValueError(f"{field_name} must be a boolean")
+
+
+def parse_optional_non_empty_string(value):
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
 
 
 @api_view(["POST"])
@@ -496,6 +508,93 @@ def sync_mt_job_card_view(request):
             "errors": summary.error_count,
             "checkpoint": result["checkpoint"],
             "error_samples": result["errors"][:10],
+        }
+    )
+
+
+@api_view(["POST"])
+def analyze_mt_job_card_problem_view(request):
+    if not can_import_from_external_api(request):
+        return Response(
+            {"error": "permission denied"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    query = parse_optional_non_empty_string(request.data.get("query"))
+    if not query:
+        return Response(
+            {"error": "query is required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        top_cases = parse_optional_positive_int(request.data.get("top_cases"), "top_cases")
+        top_groups = parse_optional_positive_int(request.data.get("top_groups"), "top_groups")
+        monthly_limit = parse_optional_positive_int(
+            request.data.get("monthly_limit"),
+            "monthly_limit",
+        )
+    except ValueError as exc:
+        return Response(
+            {"error": str(exc)},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    schema = (
+        request.data.get("schema")
+        or settings.SQLSERVER_JOB_CARD_SCHEMA
+        or "dbo"
+    ).strip()
+    view_name = (
+        request.data.get("view_name")
+        or request.data.get("view")
+        or settings.SQLSERVER_JOB_CARD_VIEW
+        or "v_MT_JOB_CARD"
+    ).strip()
+    date_from = parse_optional_non_empty_string(request.data.get("date_from"))
+    date_to = parse_optional_non_empty_string(request.data.get("date_to"))
+    response_language = parse_optional_non_empty_string(
+        request.data.get("response_language")
+    ) or "th"
+
+    try:
+        analytics = analyze_mt_job_card_problem(
+            query=query,
+            schema=schema,
+            view_name=view_name,
+            date_from=date_from,
+            date_to=date_to,
+            top_cases=top_cases or 5,
+            top_groups=top_groups or 5,
+            monthly_limit=monthly_limit or 24,
+        )
+        summary = build_problem_analytics_summary(
+            analytics,
+            language=response_language,
+        )
+    except (SQLServerConfigurationError, SQLServerDependencyError) as exc:
+        return Response(
+            {"error": str(exc)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+    except Exception as exc:
+        return Response(
+            {"error": f"problem analytics failed: {exc}"},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+    return Response(
+        {
+            "message": "problem analytics completed",
+            "summary": summary,
+            "analytics": analytics,
+            "sources": [
+                build_problem_analytics_source(
+                    query=query,
+                    schema=schema,
+                    view_name=view_name,
+                )
+            ],
         }
     )
 

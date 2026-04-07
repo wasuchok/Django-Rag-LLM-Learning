@@ -27,6 +27,7 @@
 - เชื่อม `SQL Server`
 - import ข้อมูลจาก `TB_MT_JOB_DETAIL`
 - import / sync ข้อมูลจาก `v_MT_JOB_CARD`
+- analytics สำหรับคำถามเชิงสถิติ เช่น `เกิดกี่ครั้ง`, `ต่อเดือน`, `ต่อปี`, `บ่อยไหม`
 - มี `checkpoint` สำหรับ sync รอบถัดไปอัตโนมัติ
 - มี CORS สำหรับเรียก API จากเว็บภายนอก
 
@@ -341,6 +342,43 @@ curl -X POST "http://127.0.0.1:8000/api/knowledge/sync/mt-job-cards/" \
     "overlap_minutes": 120
   }'
 ```
+
+## Problem Analytics API
+
+ใช้สำหรับถามเชิงสถิติจาก `v_MT_JOB_CARD` เช่น
+
+- ปัญหานี้เกิดกี่ครั้ง
+- ต่อเดือนเป็นยังไง
+- ต่อปีเป็นยังไง
+- เกิดบ่อยไหม
+
+ตัวอย่าง:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/analytics/mt-job-cards/problem-stats/" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-secret-key" \
+  -d '{
+    "query": "Sensor ชำรุด",
+    "schema": "dbo",
+    "view_name": "v_MT_JOB_CARD",
+    "top_cases": 5,
+    "top_groups": 5,
+    "monthly_limit": 24,
+    "response_language": "th"
+  }'
+```
+
+response จะคืนทั้ง
+
+- `summary`
+- `analytics.total_count`
+- `analytics.yearly_counts`
+- `analytics.monthly_counts`
+- `analytics.top_machines`
+- `analytics.top_positions`
+- `analytics.top_teams`
+- `analytics.recent_cases`
 
 ## Data Storage
 

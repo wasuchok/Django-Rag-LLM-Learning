@@ -135,9 +135,16 @@ def sqlserver_connection():
 
 
 def fetch_rows(query: str, params: Sequence[Any] | None = None) -> list[dict[str, Any]]:
+    client_name = get_sqlserver_client_name()
+    prepared_query = query
+    prepared_params = list(params or [])
+
+    if prepared_params and client_name == "pytds":
+        prepared_query = prepared_query.replace("?", "%s")
+
     with sqlserver_connection() as connection:
         cursor = connection.cursor()
-        cursor.execute(query, list(params or []))
+        cursor.execute(prepared_query, prepared_params)
         columns = [column[0] for column in cursor.description] if cursor.description else []
         rows = cursor.fetchall()
         return [dict(zip(columns, row)) for row in rows]

@@ -12,6 +12,11 @@ from django.db.models import Q
 from ..models import ChatMessage
 
 from .rag_service import search_knowledge
+from .sqlserver_job_card_analytics_service import (
+    analyze_mt_job_card_problem,
+    build_problem_analytics_source,
+    build_problem_analytics_summary,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +71,8 @@ FOLLOW_UP_PREFIXES = (
 TOPIC_TOKEN_PATTERN = re.compile(r"ลา[^\s,.;:!?()\[\]{}\"'“”‘’]{2,}")
 CONTEXT_DEPENDENT_HINT_PATTERN = re.compile(
     r"(กี่วัน|กี่ปี|กี่บาท|เท่าไหร่|เท่าไร|เกินมากี่|เกินกี่|เหลือกี่|ได้กี่|"
-    r"ได้ไหม|ได้มั้ย|ยังไง|อย่างไร|เป็นอะไรไหม|ต้องยื่น|ต้องทำ|ต้องใช้)"
+    r"ได้ไหม|ได้มั้ย|ยังไง|อย่างไร|เป็นอะไรไหม|ต้องยื่น|ต้องทำ|ต้องใช้|"
+    r"กี่ครั้ง|จำนวนครั้ง|จำนวนเท่าไหร่|จำนวนเท่าไร|บ่อยไหม|บ่อยแค่ไหน|ถี่ไหม|ถี่แค่ไหน|ต่อเดือน|ต่อปี|รายเดือน|รายปี|แนวโน้ม|สถิติ|ยอดฮิต|ฮิตสุด|พบบ่อยสุด|ยอดนิยม)"
 )
 THAI_CHAR_PATTERN = re.compile(r"[\u0E00-\u0E7F]")
 JAPANESE_CHAR_PATTERN = re.compile(r"[\u3040-\u30FF]")
@@ -107,6 +113,18 @@ THAI_RESPONSE_HINTS = (
     "respond in thai",
     "thai please",
     "タイ語で",
+)
+ANALYTICS_HINT_PATTERN = re.compile(
+    r"(กี่ครั้ง|จำนวนครั้ง|จำนวนเท่าไหร่|จำนวนเท่าไร|บ่อยไหม|บ่อยแค่ไหน|ถี่ไหม|ถี่แค่ไหน|ต่อเดือน|ต่อปี|รายเดือน|รายปี|"
+    r"แนวโน้ม|สถิติ|ยอดฮิต|ฮิตสุด|พบบ่อยสุด|ยอดนิยม|อันดับ|top problem|top issue|most common|most frequent|"
+    r"frequency|how many times|often|per month|per year|monthly|yearly|trend|"
+    r"何回|頻度|月別|年別)",
+    re.IGNORECASE,
+)
+ANALYTICS_GENERIC_REFERENCE_PATTERN = re.compile(
+    r"^(?:ปัญหานี้|อาการนี้|เคสนี้|กรณีนี้|เรื่องนี้|อันนี้|รายการนี้|เรื่องดังกล่าว|"
+    r"this issue|this problem|this case|it)",
+    re.IGNORECASE,
 )
 
 
@@ -212,6 +230,148 @@ def strip_response_language_directives(text: str) -> str:
 
     stripped = re.sub(r"\s{2,}", " ", stripped).strip(" ,.;:-")
     return stripped or raw_text
+
+
+def looks_like_problem_analytics_question(user_message: str) -> bool:
+    normalized = normalize_query_text(strip_response_language_directives(user_message))
+    if not normalized:
+        return False
+    return bool(ANALYTICS_HINT_PATTERN.search(normalized))
+
+
+def strip_problem_subject_noise(text: str) -> str:
+    stripped = strip_response_language_directives(text or "")
+    replacements = [
+        r"ปัญหายอดฮิต(?:คืออะไร|คือ|อะไร)?",
+        r"อาการยอดฮิต(?:คืออะไร|คือ|อะไร)?",
+        r"พบบ่อยสุด(?:คืออะไร|คือ|อะไร)?",
+        r"ยอดนิยม(?:คืออะไร|คือ|อะไร)?",
+        r"ฮิตสุด(?:คืออะไร|คือ|อะไร)?",
+        r"เป็นจำนวนครั้งเท่าไหร่(?:หรอ)?",
+        r"เป็นจำนวนเท่าไหร่(?:หรอ)?",
+        r"จำนวนครั้งเท่าไหร่(?:หรอ)?",
+        r"จำนวนเท่าไหร่(?:หรอ)?",
+        r"จำนวนเท่าไร(?:หรอ)?",
+        r"เกิดขึ้นกี่ครั้ง(?:หรอ)?",
+        r"(?:เกิด)?กี่ครั้ง(?:แล้ว)?",
+        r"จำนวนครั้ง",
+        r"ยอดฮิต",
+        r"ฮิตสุด",
+        r"พบบ่อยสุด",
+        r"ยอดนิยม",
+        r"บ่อยไหม",
+        r"บ่อยแค่ไหน",
+        r"ถี่ไหม",
+        r"ถี่แค่ไหน",
+        r"ต่อเดือน(?:เป็นยังไง)?",
+        r"ต่อปี(?:เป็นยังไง)?",
+        r"รายเดือน",
+        r"รายปี",
+        r"แนวโน้ม(?:เป็นยังไง)?",
+        r"สถิติ",
+        r"\bhow many times\b",
+        r"\bfrequency\b",
+        r"\boften\b",
+        r"\bper month\b",
+        r"\bper year\b",
+        r"\bmonthly\b",
+        r"\byearly\b",
+        r"\btrend\b",
+        r"何回",
+        r"頻度",
+        r"月別",
+        r"年別",
+        r"(?:ช่วย)?สรุป(?:ให้)?",
+        r"(?:ขอ)?ข้อมูล",
+        r"หน่อย",
+        r"หรอ",
+        r"เหรอ",
+        r"ครับ",
+        r"ค่ะ",
+        r"คะ",
+        r"เกิดขึ้น",
+        r"(?:แก้|แก้ไข)(?:ยังไง|อย่างไร|ยังไงบ้าง)?",
+        r"วิธีแก้(?:คืออะไร|ยังไง|อย่างไร)?",
+        r"เกิดจากอะไร",
+        r"เป็นเพราะอะไร",
+        r"มีเคสคล้ายไหม",
+        r"คืออะไร",
+        r"คือ",
+        r"เป็นยังไง",
+        r"อย่างไร",
+        r"\?",
+    ]
+
+    for pattern in replacements:
+        stripped = re.sub(pattern, " ", stripped, flags=re.IGNORECASE)
+
+    stripped = re.sub(r"\s{2,}", " ", stripped).strip(" ,.;:-")
+    stripped = re.sub(r"^(?:วิธี|การ)\s+", "", stripped, flags=re.IGNORECASE)
+    stripped = re.sub(r"^(?:ปัญหา|อาการ|เคส|กรณี)\s+", "", stripped, flags=re.IGNORECASE)
+    return stripped
+
+
+def extract_problem_analytics_query(
+    history: List[Dict[str, str]],
+    user_message: str,
+) -> str:
+    current_message = strip_response_language_directives((user_message or "").strip())
+    has_generic_reference = bool(
+        ANALYTICS_GENERIC_REFERENCE_PATTERN.search(normalize_query_text(current_message))
+    )
+    anchor_message = ""
+    if looks_like_followup_question(current_message) or has_generic_reference:
+        anchor_message = get_followup_anchor_message(history, current_message)
+
+    cleaned_current = strip_problem_subject_noise(current_message)
+    cleaned_anchor = strip_problem_subject_noise(anchor_message) if anchor_message else ""
+
+    if has_generic_reference:
+        return cleaned_anchor or cleaned_current
+
+    if len(normalize_query_text(cleaned_current)) < 3:
+        return cleaned_anchor or cleaned_current
+
+    return cleaned_current
+
+
+def build_problem_analytics_result(
+    history: List[Dict[str, str]],
+    user_message: str,
+    response_language: str,
+) -> Dict[str, object] | None:
+    if not looks_like_problem_analytics_question(user_message):
+        return None
+
+    analytics_query = extract_problem_analytics_query(history, user_message)
+    if not analytics_query:
+        return None
+
+    try:
+        analytics = analyze_mt_job_card_problem(
+            query=analytics_query,
+            schema=settings.SQLSERVER_JOB_CARD_SCHEMA,
+            view_name=settings.SQLSERVER_JOB_CARD_VIEW,
+        )
+    except Exception as exc:
+        logger.warning("Problem analytics failed for query=%r error=%s", analytics_query, exc)
+        return None
+
+    return {
+        "analytics_query": analytics_query,
+        "analytics": analytics,
+        "reply": build_problem_analytics_summary(
+            analytics,
+            language=response_language,
+        ),
+        "sources": [
+            build_problem_analytics_source(
+                query=analytics_query,
+                schema=settings.SQLSERVER_JOB_CARD_SCHEMA,
+                view_name=settings.SQLSERVER_JOB_CARD_VIEW,
+            )
+        ],
+    }
 
 
 def is_bad_reply(text: str) -> bool:
@@ -568,6 +728,25 @@ def prepare_reply_generation(
     retrieval_query = build_retrieval_query(history, user_message)
     followup_anchor_message = ""
     followup_topic_tokens: List[str] = []
+    analytics_result = build_problem_analytics_result(
+        history,
+        user_message,
+        response_language,
+    )
+
+    if analytics_result is not None:
+        return {
+            "history": history,
+            "response_language": response_language,
+            "retrieval_query": analytics_result.get("analytics_query", ""),
+            "followup_anchor_message": "",
+            "followup_topic_tokens": [],
+            "knowledge_items": [],
+            "knowledge_text": "",
+            "sources": analytics_result.get("sources", []),
+            "analytics_reply": analytics_result.get("reply", ""),
+            "analytics": analytics_result.get("analytics"),
+        }
 
     if looks_like_followup_question(user_message):
         followup_anchor_message = get_followup_anchor_message(history, user_message)
@@ -731,6 +910,14 @@ async def stream_reply_with_history(
     response_language = str(
         prepared.get("response_language") or DEFAULT_RESPONSE_LANGUAGE
     )
+    analytics_reply = str(prepared.get("analytics_reply") or "").strip()
+
+    if analytics_reply:
+        await on_token(analytics_reply)
+        return {
+            "reply": analytics_reply,
+            "sources": prepared.get("sources", []),
+        }
 
     if should_block_for_missing_knowledge(prepared):
         return build_missing_knowledge_result(prepared)
@@ -789,6 +976,13 @@ def generate_reply_with_history(
     response_language = str(
         prepared.get("response_language") or DEFAULT_RESPONSE_LANGUAGE
     )
+    analytics_reply = str(prepared.get("analytics_reply") or "").strip()
+
+    if analytics_reply:
+        return {
+            "reply": analytics_reply,
+            "sources": prepared.get("sources", []),
+        }
 
     if should_block_for_missing_knowledge(prepared):
         return build_missing_knowledge_result(prepared)
