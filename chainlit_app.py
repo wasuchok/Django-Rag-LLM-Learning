@@ -54,6 +54,10 @@ from chatbot.services.sqlserver_service import (
     SQLServerDependencyError,
     is_sqlserver_configured,
 )
+from chatbot.services.system_health_service import (
+    build_system_health_message,
+    get_system_health_report,
+)
 
 list_user_conversations_async = make_async(list_user_conversations)
 get_conversation_messages_async = make_async(get_conversation_messages)
@@ -66,6 +70,7 @@ get_knowledge_document_summary_async = make_async(get_knowledge_document_summary
 delete_knowledge_document_async = make_async(delete_knowledge_document)
 delete_all_knowledge_documents_async = make_async(delete_all_knowledge_documents)
 import_sqlserver_cases_async = make_async(import_sqlserver_cases)
+get_system_health_report_async = make_async(get_system_health_report)
 
 DOCUMENTS_PER_PAGE = 5
 CONVERSATIONS_PER_PAGE = 8
@@ -311,8 +316,27 @@ def build_intro_actions(*, can_manage_knowledge: bool) -> list[cl.Action]:
                 label="sync ทั้งหมด",
             )
         )
+        actions.append(
+            cl.Action(
+                name="system_health_check",
+                payload={"live": True},
+                label="ตรวจสุขภาพระบบ",
+            )
+        )
 
     return actions
+
+
+async def send_system_health_status(*, live: bool = True, only_if_not_ok: bool = False) -> None:
+    if not get_current_user_can_manage_all():
+        await cl.Message(content="บัญชีนี้ไม่มีสิทธิ์ดูสถานะระบบ").send()
+        return
+
+    report = await get_system_health_report_async(include_live_checks=live)
+    if only_if_not_ok and report.get("status") == "ok":
+        return
+
+    await cl.Message(content=build_system_health_message(report)).send()
 
 
 async def replay_conversation_messages(conversation_data: dict) -> None:
@@ -866,6 +890,9 @@ async def on_chat_start() -> None:
         actions=build_intro_actions(can_manage_knowledge=can_manage_knowledge),
     ).send()
 
+    if can_manage_knowledge:
+        await send_system_health_status(live=False, only_if_not_ok=True)
+
 
 @cl.on_chat_resume
 async def on_chat_resume(thread: dict) -> None:
@@ -923,6 +950,10 @@ async def on_message(message: cl.Message) -> None:
 
     if user_text in {"sync latest", "sync sql", "sync ล่าสุด", "ซิงก์ล่าสุด", "/syncsql"}:
         await run_sqlserver_sync(days=7)
+        return
+
+    if user_text in {"ตรวจสุขภาพระบบ", "ดูสุขภาพระบบ", "/health", "/system-health"}:
+        await send_system_health_status(live=True)
         return
 
     if user_text in {"ดูห้องสนทนา", "ดูห้องของฉัน", "/chats"}:
@@ -1220,6 +1251,12 @@ async def on_knowledge_sync_sqlserver(action: cl.Action) -> None:
     except (TypeError, ValueError):
         normalized_days = None
     await run_sqlserver_sync(days=normalized_days)
+
+
+@cl.action_callback("system_health_check")
+async def on_system_health_check(action: cl.Action) -> None:
+    live = bool(action.payload.get("live", True))
+    await send_system_health_status(live=live)
 
 
 @cl.action_callback("knowledge_set_upload_private")

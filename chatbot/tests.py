@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 from django.test import SimpleTestCase
 
 from .services.ollama_service import extract_problem_analytics_query
@@ -5,6 +7,12 @@ from .services.sqlserver_job_card_analytics_service import (
     _build_query_terms,
     classify_frequency,
     classify_trend,
+)
+from .services.system_health_service import (
+    STATUS_ERROR,
+    STATUS_OK,
+    STATUS_WARNING,
+    get_system_health_report,
 )
 
 
@@ -76,3 +84,89 @@ class ProblemAnalyticsHelpersTests(SimpleTestCase):
             extract_problem_analytics_query(history, "ปัญหายอดฮิตคือ"),
             "Sensor",
         )
+
+
+class SystemHealthReportTests(SimpleTestCase):
+    @patch("chatbot.services.system_health_service.check_sync_checkpoint_health")
+    @patch("chatbot.services.system_health_service.check_sqlserver_health")
+    @patch("chatbot.services.system_health_service.check_ollama_health")
+    def test_get_system_health_report_aggregates_warning(
+        self,
+        mock_ollama,
+        mock_sqlserver,
+        mock_checkpoint,
+    ):
+        mock_ollama.return_value = {
+            "name": "ollama",
+            "label": "Ollama",
+            "status": STATUS_OK,
+            "status_label": "ปกติ",
+            "message": "ok",
+            "details": {},
+            "alerts": [],
+        }
+        mock_sqlserver.return_value = {
+            "name": "sqlserver",
+            "label": "SQL Server",
+            "status": STATUS_WARNING,
+            "status_label": "เตือน",
+            "message": "warning",
+            "details": {},
+            "alerts": ["sql warning"],
+        }
+        mock_checkpoint.return_value = {
+            "name": "sync_checkpoints",
+            "label": "Sync Checkpoint",
+            "status": STATUS_OK,
+            "status_label": "ปกติ",
+            "message": "ok",
+            "details": {},
+            "alerts": [],
+        }
+
+        report = get_system_health_report(include_live_checks=True)
+
+        self.assertEqual(report["status"], STATUS_WARNING)
+        self.assertIn("sql warning", report["alerts"])
+
+    @patch("chatbot.services.system_health_service.check_sync_checkpoint_health")
+    @patch("chatbot.services.system_health_service.check_sqlserver_health")
+    @patch("chatbot.services.system_health_service.check_ollama_health")
+    def test_get_system_health_report_aggregates_error(
+        self,
+        mock_ollama,
+        mock_sqlserver,
+        mock_checkpoint,
+    ):
+        mock_ollama.return_value = {
+            "name": "ollama",
+            "label": "Ollama",
+            "status": STATUS_ERROR,
+            "status_label": "ผิดปกติ",
+            "message": "down",
+            "details": {},
+            "alerts": ["ollama down"],
+        }
+        mock_sqlserver.return_value = {
+            "name": "sqlserver",
+            "label": "SQL Server",
+            "status": STATUS_OK,
+            "status_label": "ปกติ",
+            "message": "ok",
+            "details": {},
+            "alerts": [],
+        }
+        mock_checkpoint.return_value = {
+            "name": "sync_checkpoints",
+            "label": "Sync Checkpoint",
+            "status": STATUS_OK,
+            "status_label": "ปกติ",
+            "message": "ok",
+            "details": {},
+            "alerts": [],
+        }
+
+        report = get_system_health_report(include_live_checks=True)
+
+        self.assertEqual(report["status"], STATUS_ERROR)
+        self.assertIn("ollama down", report["alerts"])

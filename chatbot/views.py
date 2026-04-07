@@ -28,6 +28,7 @@ from .services.sqlserver_service import (
     SQLServerConfigurationError,
     SQLServerDependencyError,
 )
+from .services.system_health_service import get_system_health_report
 
 
 def get_request_user_id(request):
@@ -53,6 +54,10 @@ def has_valid_import_api_key(request) -> bool:
 
 
 def can_import_from_external_api(request) -> bool:
+    return can_manage_all_documents(request) or has_valid_import_api_key(request)
+
+
+def can_view_system_health(request) -> bool:
     return can_manage_all_documents(request) or has_valid_import_api_key(request)
 
 
@@ -357,6 +362,31 @@ def health_check(request):
         "status": "ok",
         "service": "django-chatbot-api"
     })
+
+
+@api_view(["GET"])
+def system_health_view(request):
+    if not can_view_system_health(request):
+        return Response(
+            {"error": "permission denied"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    live_param = request.query_params.get("live")
+    try:
+        include_live_checks = (
+            parse_optional_bool(live_param, "live")
+            if live_param not in (None, "")
+            else True
+        )
+    except ValueError as exc:
+        return Response(
+            {"error": str(exc)},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    report = get_system_health_report(include_live_checks=include_live_checks)
+    return Response(report)
 
 
 @api_view(["POST"])

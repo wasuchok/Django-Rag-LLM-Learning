@@ -5,6 +5,7 @@ from .views import (
     health_check,
     import_mt_job_card_view,
     sync_mt_job_card_view,
+    system_health_view,
     knowledge_list_create,
     knowledge_detail,
     get_chat_history,
@@ -33,4 +34,5 @@ urlpatterns = [
     ),
 
     path("health/", health_check, name="health-check"),
+    path("system-health/", system_health_view, name="system-health"),
 ]
