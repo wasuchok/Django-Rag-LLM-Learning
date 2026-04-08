@@ -42,6 +42,53 @@ class ChatMessage(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
 
+class ChatMessageFeedback(models.Model):
+    VALUE_INCORRECT = 0
+    VALUE_CORRECT = 1
+    VALUE_CHOICES = [
+        (VALUE_INCORRECT, "Incorrect"),
+        (VALUE_CORRECT, "Correct"),
+    ]
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="chat_message_feedback",
+        blank=True,
+        null=True,
+    )
+    message = models.ForeignKey(
+        ChatMessage,
+        on_delete=models.CASCADE,
+        related_name="feedback_items",
+    )
+    conversation_id = models.CharField(max_length=100, db_index=True)
+    chainlit_step_id = models.CharField(max_length=100, db_index=True)
+    chainlit_feedback_id = models.CharField(
+        max_length=100,
+        unique=True,
+        blank=True,
+        null=True,
+        db_index=True,
+    )
+    value = models.SmallIntegerField(choices=VALUE_CHOICES)
+    comment = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "message"],
+                name="unique_chat_feedback_per_user_message",
+            )
+        ]
+
+    def __str__(self):
+        value_label = "correct" if self.value == self.VALUE_CORRECT else "incorrect"
+        return f"{self.conversation_id}:{value_label}"
+
+
 class KnowledgeDocument(models.Model):
     VISIBILITY_PRIVATE = "private"
     VISIBILITY_SHARED = "shared"

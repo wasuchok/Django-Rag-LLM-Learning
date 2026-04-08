@@ -5,6 +5,7 @@ from datetime import date, datetime, time, timedelta
 from typing import Any
 
 from .sqlserver_service import fetch_rows
+from .term_grouping_service import build_semantic_search_groups
 
 SEARCHABLE_FIELDS = (
     "MC_NO",
@@ -44,6 +45,7 @@ LANGUAGE_TEXT = {
         "date_range": "ช่วงข้อมูลที่พบ",
         "yearly": "สถิติรายปี",
         "monthly": "สถิติรายเดือน",
+        "expanded_terms": "รวมคำใกล้เคียงในการค้นหา",
         "top_problem_patterns": "อาการ/ปัญหาที่พบบ่อย",
         "top_machines": "เครื่องจักรที่พบมาก",
         "top_positions": "ตำแหน่งที่เสียที่พบบ่อย",
@@ -70,6 +72,7 @@ LANGUAGE_TEXT = {
         "date_range": "Observed range",
         "yearly": "Yearly counts",
         "monthly": "Monthly counts",
+        "expanded_terms": "Expanded search terms",
         "top_problem_patterns": "Top problem patterns",
         "top_machines": "Top machines",
         "top_positions": "Top positions",
@@ -96,6 +99,7 @@ LANGUAGE_TEXT = {
         "date_range": "確認できた期間",
         "yearly": "年別件数",
         "monthly": "月別件数",
+        "expanded_terms": "検索に含めた類義語",
         "top_problem_patterns": "よくある不具合パターン",
         "top_machines": "発生が多い設備",
         "top_positions": "発生が多い位置",
@@ -188,10 +192,14 @@ def _build_problem_match_where(
     query: str,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
-) -> tuple[str, list[Any], list[str]]:
+) -> tuple[str, list[Any], list[str], list[str]]:
     query_terms = _build_query_terms(query)
     if not query_terms:
         raise ValueError("query is required")
+
+    search_term_groups = build_semantic_search_groups(query)
+    if not search_term_groups:
+        search_term_groups = [[term] for term in query_terms]
 
     where_clauses = ["[ID] IS NOT NULL"]
     params: list[Any] = []
@@ -201,11 +209,21 @@ def _build_problem_match_where(
         for field in SEARCHABLE_FIELDS
     ]
 
-    for term in query_terms:
-        like_value = f"%{term}%"
-        term_clauses = [f"{field_sql} LIKE ?" for field_sql in searchable_fields_sql]
-        where_clauses.append("(" + " OR ".join(term_clauses) + ")")
-        params.extend([like_value] * len(term_clauses))
+    expanded_terms: list[str] = []
+
+    for term_group in search_term_groups:
+        group_clauses: list[str] = []
+        for term in term_group:
+            cleaned_term = _normalize_text_value(term)
+            if not cleaned_term:
+                continue
+            expanded_terms.append(cleaned_term)
+            like_value = f"%{cleaned_term}%"
+            group_clauses.extend(f"{field_sql} LIKE ?" for field_sql in searchable_fields_sql)
+            params.extend([like_value] * len(searchable_fields_sql))
+
+        if group_clauses:
+            where_clauses.append("(" + " OR ".join(group_clauses) + ")")
 
     if date_from is not None:
         where_clauses.append("[J_CREATE_DATE] >= ?")
@@ -215,7 +233,8 @@ def _build_problem_match_where(
         where_clauses.append("[J_CREATE_DATE] <= ?")
         params.append(date_to)
 
-    return " AND ".join(where_clauses), params, query_terms
+    expanded_terms = list(dict.fromkeys(expanded_terms))
+    return " AND ".join(where_clauses), params, query_terms, expanded_terms
 
 
 def _fetch_count_row(
@@ -385,7 +404,7 @@ def analyze_mt_job_card_problem(
     parsed_date_from = _parse_date_boundary(date_from, end_of_day=False)
     parsed_date_to = _parse_date_boundary(date_to, end_of_day=True)
 
-    where_sql, params, query_terms = _build_problem_match_where(
+    where_sql, params, query_terms, expanded_query_terms = _build_problem_match_where(
         query=query,
         date_from=parsed_date_from,
         date_to=parsed_date_to,
@@ -504,6 +523,7 @@ def analyze_mt_job_card_problem(
     return {
         "query": _normalize_text_value(query),
         "query_terms": query_terms,
+        "expanded_query_terms": expanded_query_terms,
         "schema": schema,
         "view_name": view_name,
         "date_from": _format_datetime_value(parsed_date_from),
@@ -566,6 +586,15 @@ def build_problem_analytics_summary(
         lines.append(f"{text['monthly']}:")
         for item in monthly_counts[:6]:
             lines.append(f"- {item['month']}: {item['count']} {text['times']}")
+
+    expanded_query_terms = analytics.get("expanded_query_terms") or []
+    if expanded_query_terms:
+        normalized_expanded = [_normalize_text_value(item) for item in expanded_query_terms]
+        normalized_expanded = [item for item in normalized_expanded if item]
+        if len(normalized_expanded) > 1:
+            lines.append("")
+            lines.append(f"{text['expanded_terms']}:")
+            lines.append(f"- {', '.join(normalized_expanded[:12])}")
 
     top_problem_patterns = analytics.get("top_problem_patterns") or []
     if top_problem_patterns:

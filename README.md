@@ -28,6 +28,9 @@
 - import ข้อมูลจาก `TB_MT_JOB_DETAIL`
 - import / sync ข้อมูลจาก `v_MT_JOB_CARD`
 - analytics สำหรับคำถามเชิงสถิติ เช่น `เกิดกี่ครั้ง`, `ต่อเดือน`, `ต่อปี`, `บ่อยไหม`
+- เก็บ feedback ของคำตอบจาก Chainlit (`ตรง / ไม่ตรง`)
+- reranking หลัง retrieval เพื่อคัดเคสที่ตรงจริงก่อนส่งเข้า LLM
+- structured answer mode สำหรับคำถามกว้างหรือหลายเคส
 - มี `checkpoint` สำหรับ sync รอบถัดไปอัตโนมัติ
 - มี CORS สำหรับเรียก API จากเว็บภายนอก
 
@@ -35,6 +38,7 @@
 
 - Python / Django / Django REST Framework
 - Chainlit
+- LangChain / LangGraph
 - Ollama
 - ChromaDB
 - SQLite
@@ -44,7 +48,8 @@
 
 - `chainlit_app.py` : หน้าแชต Chainlit
 - `chatbot/views.py` : Django API endpoints
-- `chatbot/services/ollama_service.py` : prompt / generation / RAG orchestration
+- `chatbot/services/ollama_service.py` : prompt / generation entrypoints + fallback orchestration
+- `chatbot/services/langgraph_chat_service.py` : LangChain + LangGraph orchestration layer
 - `chatbot/services/rag_service.py` : embedding / indexing / retrieval
 - `chatbot/services/sqlserver_service.py` : SQL Server connection layer
 - `chatbot/services/sqlserver_case_ingestion_service.py` : import จาก `TB_MT_JOB_DETAIL`
@@ -60,13 +65,14 @@
 ```env
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL=qwen3:14b
+AI_ORCHESTRATOR=langgraph
 OLLAMA_THINK=false
 OLLAMA_KEEP_ALIVE=15m
-OLLAMA_NUM_PREDICT=384
+OLLAMA_NUM_PREDICT=1536
 OLLAMA_EMBED_MODEL=nomic-embed-text-v2-moe
 RAG_ONLY_MODE=false
 RAG_INCLUDE_CHAT_HISTORY=true
-RAG_SEARCH_TOP_K=20
+RAG_SEARCH_TOP_K=30
 
 SQLSERVER_HOST=192.168.1.10
 SQLSERVER_PORT=1433
@@ -115,6 +121,11 @@ apply migrations
 ollama pull qwen3:14b
 ollama pull nomic-embed-text-v2-moe
 ```
+
+หมายเหตุ:
+
+- ค่าเริ่มต้นตอนนี้ใช้ `AI_ORCHESTRATOR=langgraph`
+- ถ้าต้องการ rollback กลับ flow เดิมชั่วคราว ให้ตั้ง `AI_ORCHESTRATOR=legacy`
 
 ## Run
 
@@ -167,6 +178,14 @@ http://127.0.0.1:8000/api
 
 ```http
 GET /api/health/
+```
+
+### Feedback Summary
+
+สำหรับ admin ใช้ดูสรุป feedback ล่าสุดของคำตอบ
+
+```http
+GET /api/feedback/summary/?limit=20
 ```
 
 ### Chat

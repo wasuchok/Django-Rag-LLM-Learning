@@ -13,6 +13,7 @@ from .conversation_management_service import (
     list_native_threads,
     upsert_conversation_thread,
 )
+from .feedback_service import delete_message_feedback, upsert_message_feedback
 
 UserModel = get_user_model()
 
@@ -93,10 +94,18 @@ class DjangoChainlitDataLayer(BaseDataLayer):
         )
 
     async def delete_feedback(self, feedback_id: str) -> bool:
-        return True
+        return await sync_to_async(delete_message_feedback, thread_sensitive=True)(
+            feedback_id
+        )
 
     async def upsert_feedback(self, feedback: Feedback) -> str:
-        return feedback.id or ""
+        return await sync_to_async(upsert_message_feedback, thread_sensitive=True)(
+            step_id=feedback.forId,
+            value=feedback.value,
+            thread_id=feedback.threadId,
+            feedback_id=feedback.id,
+            comment=feedback.comment,
+        )
 
     async def create_element(self, element):
         return None

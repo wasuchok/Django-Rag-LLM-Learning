@@ -17,6 +17,11 @@ from .sqlserver_job_card_analytics_service import (
     build_problem_analytics_source,
     build_problem_analytics_summary,
 )
+from .term_grouping_service import (
+    build_semantic_search_groups,
+    build_semantic_search_text,
+    normalize_grouping_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +31,7 @@ OLLAMA_TEMPERATURE = settings.OLLAMA_TEMPERATURE
 OLLAMA_THINK = settings.OLLAMA_THINK
 OLLAMA_KEEP_ALIVE = settings.OLLAMA_KEEP_ALIVE
 OLLAMA_NUM_PREDICT = settings.OLLAMA_NUM_PREDICT
+AI_ORCHESTRATOR = settings.AI_ORCHESTRATOR
 RAG_ONLY_MODE = settings.RAG_ONLY_MODE
 RAG_INCLUDE_CHAT_HISTORY = settings.RAG_INCLUDE_CHAT_HISTORY
 RAG_SEARCH_TOP_K = settings.RAG_SEARCH_TOP_K
@@ -35,6 +41,32 @@ LANGUAGE_LABELS = {
     "th": "ภาษาไทย",
     "en": "ภาษาอังกฤษ",
     "ja": "ภาษาญี่ปุ่น",
+}
+STRUCTURED_ANSWER_HEADINGS = {
+    "th": [
+        "ภาพรวม",
+        "สาเหตุที่พบบ่อย",
+        "วิธีแก้หลัก",
+        "ผู้ปฏิบัติงาน/ทีมที่เกี่ยวข้อง",
+        "ตัวอย่างเคสสำคัญ",
+        "ข้อเสนอแนะ",
+    ],
+    "en": [
+        "Overview",
+        "Common causes",
+        "Main fixes",
+        "Relevant workers/teams",
+        "Key example cases",
+        "Recommendations",
+    ],
+    "ja": [
+        "概要",
+        "よくある原因",
+        "主な対処方法",
+        "関係する担当者・チーム",
+        "代表的な事例",
+        "推奨事項",
+    ],
 }
 RAG_ONLY_NO_CONTEXT_REPLIES = {
     "th": "ไม่พบข้อมูลที่เกี่ยวข้องในฐานความรู้ จึงตอบได้เพียงว่าไม่มีข้อมูลเพียงพอครับ",
@@ -135,6 +167,7 @@ def build_ollama_payload(
     messages: List[Dict[str, str]],
     *,
     stream: bool = False,
+    num_predict: Optional[int] = None,
 ) -> Dict[str, Any]:
     return {
         "model": OLLAMA_MODEL,
@@ -144,7 +177,7 @@ def build_ollama_payload(
         "keep_alive": OLLAMA_KEEP_ALIVE,
         "options": {
             "temperature": OLLAMA_TEMPERATURE,
-            "num_predict": OLLAMA_NUM_PREDICT,
+            "num_predict": num_predict or OLLAMA_NUM_PREDICT,
         }
     }
 
@@ -580,13 +613,13 @@ def build_retrieval_query(history: List[Dict[str, str]], user_message: str) -> s
         return ""
 
     if not looks_like_followup_question(current_message):
-        return current_message
+        return build_semantic_search_text(current_message)
 
     anchor_message = get_followup_anchor_message(history, current_message)
     if not anchor_message:
-        return current_message
+        return build_semantic_search_text(current_message)
 
-    return "\n".join([anchor_message, current_message])
+    return build_semantic_search_text("\n".join([anchor_message, current_message]))
 
 
 def has_grounded_knowledge(prepared: Dict[str, object]) -> bool:
@@ -619,6 +652,7 @@ def build_messages(
     strict: bool = False,
     knowledge_text: str = "",
     response_language: str = DEFAULT_RESPONSE_LANGUAGE,
+    structured_answer_mode: bool = False,
 ) -> List[Dict[str, str]]:
     language_label = get_response_language_label(response_language)
 
@@ -632,14 +666,17 @@ def build_messages(
     3. ถ้ามีประวัติสนทนาถูกส่งมา ให้ใช้เพื่อช่วยเข้าใจคำถามปัจจุบันเท่านั้น ไม่ใช่แหล่งข้อมูลอ้างอิง
     4. ถ้าข้อมูลอ้างอิงไม่มีคำตอบชัดเจน หรือไม่ครอบคลุมคำถาม ให้ตอบว่าไม่มีข้อมูลเพียงพอในฐานความรู้
     5. ห้ามเดา ห้ามแต่ง ห้ามสรุปเกินกว่าที่ข้อมูลอ้างอิงระบุไว้
-    6. ตอบให้กระชับแต่ครอบคลุม ชัดเจน และใช้{language_label}เท่านั้น
+    6. ตอบให้ละเอียด ชัดเจน อ่านง่าย และใช้{language_label}เท่านั้น
     7. ตอบเฉพาะสิ่งที่ผู้ใช้ถาม ห้ามดึงรายละเอียดเรื่องอื่นที่ไม่ได้ถามมาเอง
     8. ถ้าคำถามเกี่ยวกับจำนวน ส่วนเกิน หรือการคำนวณ ให้คำนวณจากข้อมูลอ้างอิงโดยตรงและสรุปผลลัพธ์ให้ชัดเจน
     9. ถ้าข้อมูลอ้างอิงมีข้อมูล "ผู้ปฏิบัติงาน" หรือ "Worker" ให้ระบุในคำตอบด้วยเสมอ โดยใช้ป้ายกำกับที่เหมาะกับ{language_label}
     10. ถ้าข้อมูลอ้างอิงมีหลายเคสที่เกี่ยวข้อง ให้สรุปรวมจากหลายเคส ไม่ใช่ยึดแค่เคสเดียว
     11. ถ้ามีรูปแบบหรือแนวโน้มที่พบซ้ำ ให้สรุปเป็นภาพรวม เช่น สาเหตุที่พบบ่อย วิธีแก้ที่พบบ่อย หรือทีม/ผู้ปฏิบัติงานที่เกี่ยวข้อง
-    12. ถ้าข้อมูลเพียงพอ ให้ตอบแบบละเอียดขึ้นและจัดเป็นหัวข้อที่อ่านง่าย เช่น ภาพรวม สาเหตุที่พบบ่อย วิธีแก้ที่พบบ่อย และตัวอย่างเคสที่เกี่ยวข้อง
-    13. ถ้ามีหลายเคสที่ใกล้เคียงกัน ให้ยกตัวอย่างเคสสำคัญ 3-5 เคสพร้อมรายละเอียดที่ช่วยตัดสินใจได้
+    12. ถ้าข้อมูลเพียงพอ ให้ตอบแบบละเอียดและจัดเป็นหัวข้อที่อ่านง่าย เช่น ภาพรวม สาเหตุที่พบบ่อย วิธีแก้ที่พบบ่อย ทีม/ผู้ปฏิบัติงานที่เกี่ยวข้อง และตัวอย่างเคสที่เกี่ยวข้อง
+    13. ถ้ามีหลายเคสที่ใกล้เคียงกัน ให้ยกตัวอย่างเคสสำคัญ 5-8 เคสพร้อมรายละเอียดที่ช่วยตัดสินใจได้
+    14. ถ้าผู้ใช้ถามกว้าง เช่น ถามทั้งตระกูลอาการหรืออุปกรณ์ ให้สรุปจากหลายเคสให้มากขึ้นและเน้นรูปแบบที่พบซ้ำ
+    15. ถ้าข้อมูลอ้างอิงมีความหลากหลาย ให้สรุปเป็นลำดับความพบบ่อยหรือแนวทางหลักก่อน แล้วค่อยตามด้วยรายละเอียดและตัวอย่างเคส
+    16. ห้ามตัดคำตอบกลางประโยค กลางหัวข้อ หรือกลางรายการ ถ้าจัดเป็นข้อให้ตอบให้จบครบทุกข้อที่เริ่มไว้
     """
     else:
         system_prompt = f"""
@@ -647,11 +684,11 @@ def build_messages(
 
     กฎที่ต้องทำตาม:
     1. ถ้ามีประวัติสนทนาถูกส่งมา ให้ใช้เพื่อช่วยเข้าใจคำถามปัจจุบันเท่านั้น
-    2. ตอบให้กระชับแต่ครอบคลุม ชัดเจน และใช้{language_label}เท่านั้น
+    2. ตอบให้ละเอียด ชัดเจน อ่านง่าย และใช้{language_label}เท่านั้น
     3. ตอบเฉพาะสิ่งที่ผู้ใช้ถาม ห้ามดึงรายละเอียดเรื่องอื่นที่ไม่ได้ถามมาเอง
     4. ถ้าคำถามเกี่ยวกับจำนวน ส่วนเกิน หรือการคำนวณ ให้สรุปผลลัพธ์ที่คำนวณได้ให้ชัดเจน
     5. หากไม่มั่นใจจริง ๆ ให้บอกตามตรงว่าไม่แน่ใจ แทนการแต่งข้อมูล
-    6. ถ้าคำถามเป็นเชิงสรุปภาพรวมหรือมีหลายกรณีเกี่ยวข้อง ให้ตอบแบบละเอียดขึ้นและจัดเป็นหัวข้อที่อ่านง่าย
+    6. ถ้าคำถามเป็นเชิงสรุปภาพรวมหรือมีหลายกรณีเกี่ยวข้อง ให้ตอบแบบละเอียดและจัดเป็นหัวข้อที่อ่านง่าย
     """
 
     if strict and knowledge_text:
@@ -660,6 +697,19 @@ def build_messages(
 - คำตอบสุดท้ายต้องเป็น{language_label}
 - อย่าสลับไปใช้ภาษาอื่น เว้นแต่เป็นชื่อเฉพาะ รหัสชิ้นส่วน หรือข้อความที่อยู่ในข้อมูลอ้างอิง
 - ถ้าไม่มีข้อมูลพอ ให้ปฏิเสธอย่างสุภาพแทนการคาดเดา
+"""
+
+    if structured_answer_mode:
+        headings = STRUCTURED_ANSWER_HEADINGS.get(
+            response_language,
+            STRUCTURED_ANSWER_HEADINGS[DEFAULT_RESPONSE_LANGUAGE],
+        )
+        system_prompt += f"""
+โหมดคำตอบแบบเป็นโครงสร้าง:
+- จัดคำตอบเป็นหัวข้อให้ชัดเจนตามลำดับนี้เมื่อมีข้อมูลเพียงพอ: {", ".join(headings)}
+- ถ้าหัวข้อใดไม่มีข้อมูลจริงจากอ้างอิง ให้ข้ามหัวข้อนั้นได้
+- ในหัวข้อกรณีตัวอย่าง ให้ยกตัวอย่างหลายเคสที่สำคัญและไม่ซ้ำกัน
+- ถ้าข้อมูลมีจำนวนมาก ให้เน้นสรุปภาพรวมก่อน แล้วค่อยลงรายละเอียดที่พบบ่อยที่สุด
 """
 
     messages = [{"role": "system", "content": system_prompt}]
@@ -675,8 +725,170 @@ def build_messages(
     return messages
 
 
-def call_ollama(messages: List[Dict[str, str]]) -> dict:
-    payload = build_ollama_payload(messages, stream=False)
+def get_generation_num_predict(
+    user_message: str,
+    prepared: Dict[str, object],
+) -> int:
+    base_budget = max(1024, OLLAMA_NUM_PREDICT)
+    knowledge_items = prepared.get("knowledge_items") or []
+    normalized = normalize_query_text(strip_response_language_directives(user_message))
+    word_count = len(normalized.split())
+    has_broad_scope = word_count <= 4
+    has_many_cases = len(knowledge_items) >= 20
+    has_medium_cases = len(knowledge_items) >= 10
+    has_large_context = len(knowledge_items) >= 30
+
+    if has_large_context and has_broad_scope:
+        return max(base_budget, 4096)
+
+    if has_many_cases and has_broad_scope:
+        return max(base_budget, 3072)
+
+    if has_many_cases or (has_medium_cases and has_broad_scope):
+        return max(base_budget, 2048)
+
+    if has_medium_cases or has_broad_scope:
+        return max(base_budget, 1536)
+
+    return base_budget
+
+
+def _flatten_rerank_terms(query: str) -> List[str]:
+    normalized_query = strip_response_language_directives(query or "").strip()
+    groups = build_semantic_search_groups(normalized_query)
+    terms: List[str] = []
+    seen = set()
+
+    for group in groups:
+        for term in group:
+            cleaned = " ".join((term or "").split()).strip()
+            normalized = normalize_grouping_text(cleaned)
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            terms.append(cleaned)
+
+    if not terms and normalized_query:
+        return [normalized_query]
+
+    return terms
+
+
+def _count_distinct_phrase_matches(searchable_text: str, terms: List[str]) -> int:
+    matches = 0
+    seen = set()
+
+    for term in terms:
+        normalized_term = normalize_grouping_text(term)
+        if not normalized_term or normalized_term in seen:
+            continue
+        if normalized_term in searchable_text:
+            seen.add(normalized_term)
+            matches += 1
+
+    return matches
+
+
+def rerank_knowledge_items(
+    query: str,
+    knowledge_items: List[Dict],
+    *,
+    limit: Optional[int] = None,
+) -> List[Dict]:
+    if not knowledge_items:
+        return []
+
+    normalized_query = normalize_grouping_text(
+        strip_response_language_directives(query or "")
+    )
+    rerank_terms = _flatten_rerank_terms(query)
+    primary_terms = [
+        normalize_grouping_text(term)
+        for term in rerank_terms[:4]
+        if normalize_grouping_text(term)
+    ]
+
+    scored_items = []
+    for index, item in enumerate(knowledge_items):
+        metadata = item.get("metadata", {}) or {}
+        content_text = normalize_grouping_text(item.get("content", "") or "")
+        title_text = normalize_grouping_text(metadata.get("title", "") or "")
+        source_text = normalize_grouping_text(metadata.get("source", "") or "")
+        searchable_text = " ".join(
+            part for part in [title_text, source_text, content_text] if part
+        ).strip()
+
+        distance = item.get("distance")
+        semantic_score = 0.0
+        if distance is not None:
+            semantic_score = max(0.0, 2.5 - float(distance)) * 10
+
+        exact_query_boost = 0
+        if normalized_query:
+            if normalized_query in title_text:
+                exact_query_boost += 20
+            elif normalized_query in searchable_text:
+                exact_query_boost += 12
+
+        title_term_matches = _count_distinct_phrase_matches(title_text, rerank_terms)
+        content_term_matches = _count_distinct_phrase_matches(content_text, rerank_terms)
+        source_term_matches = _count_distinct_phrase_matches(source_text, rerank_terms)
+
+        primary_term_coverage = 0
+        if primary_terms and searchable_text:
+            primary_term_coverage = sum(1 for term in primary_terms if term in searchable_text)
+
+        score = (
+            semantic_score
+            + exact_query_boost
+            + (title_term_matches * 8)
+            + (content_term_matches * 4)
+            + (source_term_matches * 2)
+            + (primary_term_coverage * 6)
+        )
+
+        scored_items.append(
+            (
+                -score,
+                distance if distance is not None else 9999,
+                index,
+                item,
+            )
+        )
+
+    scored_items.sort()
+    reranked = [item for _, _, _, item in scored_items]
+    if limit is None:
+        return reranked
+    return reranked[:limit]
+
+
+def should_use_structured_answer_mode(
+    user_message: str,
+    prepared: Dict[str, object],
+) -> bool:
+    normalized = normalize_query_text(strip_response_language_directives(user_message))
+    word_count = len(normalized.split())
+    knowledge_items = prepared.get("knowledge_items") or []
+
+    if len(knowledge_items) >= 8:
+        return True
+
+    if word_count <= 4 and not looks_like_problem_analytics_question(user_message):
+        return True
+
+    if any(keyword in normalized for keyword in ["วิธีแก้", "แนวทาง", "แก้อย่างไร", "แก้ยังไง"]):
+        return True
+
+    return False
+
+
+def call_ollama(
+    messages: List[Dict[str, str]],
+    *,
+    num_predict: Optional[int] = None,
+) -> dict:
+    payload = build_ollama_payload(messages, stream=False, num_predict=num_predict)
 
     logger.debug("Sending chat request to Ollama with %s messages", len(messages))
 
@@ -760,7 +972,7 @@ def prepare_reply_generation(
 
     knowledge_items = search_knowledge(
         retrieval_query,
-        top_k=RAG_SEARCH_TOP_K,
+        top_k=min(max(RAG_SEARCH_TOP_K * 2, 30), 60),
         max_distance=1.2,
         user_id=user_id,
     )
@@ -776,16 +988,29 @@ def prepare_reply_generation(
         and not followup_topic_tokens
         and normalize_query_text(retrieval_query) != normalize_query_text(user_message)
     ):
+        fallback_query = build_semantic_search_text(user_message)
         knowledge_items = search_knowledge(
-            user_message,
-            top_k=RAG_SEARCH_TOP_K,
+            fallback_query,
+            top_k=min(max(RAG_SEARCH_TOP_K * 2, 30), 60),
             max_distance=1.2,
             user_id=user_id,
         )
-        retrieval_query = user_message
+        retrieval_query = fallback_query
+
+    knowledge_items = rerank_knowledge_items(
+        user_message,
+        knowledge_items,
+        limit=RAG_SEARCH_TOP_K,
+    )
 
     knowledge_text = build_knowledge_context(knowledge_items)
     source_items = clean_sources(knowledge_items)
+    structured_answer_mode = should_use_structured_answer_mode(
+        user_message,
+        {
+            "knowledge_items": knowledge_items,
+        },
+    )
 
     return {
         "history": history,
@@ -796,6 +1021,7 @@ def prepare_reply_generation(
         "knowledge_items": knowledge_items,
         "knowledge_text": knowledge_text,
         "sources": source_items,
+        "structured_answer_mode": structured_answer_mode,
     }
 
 
@@ -819,6 +1045,8 @@ def build_missing_knowledge_result(prepared: Dict[str, object]) -> Dict[str, obj
 async def stream_ollama_response(
     messages: List[Dict[str, str]],
     on_token: Callable[[str], Awaitable[None]],
+    *,
+    num_predict: Optional[int] = None,
 ) -> dict:
     queue: asyncio.Queue[dict] = asyncio.Queue()
     loop = asyncio.get_running_loop()
@@ -827,7 +1055,11 @@ async def stream_ollama_response(
         loop.call_soon_threadsafe(queue.put_nowait, item)
 
     def worker() -> None:
-        payload = build_ollama_payload(messages, stream=True)
+        payload = build_ollama_payload(
+            messages,
+            stream=True,
+            num_predict=num_predict,
+        )
         final_data: dict = {}
 
         try:
@@ -892,7 +1124,7 @@ async def stream_ollama_response(
             return final_data
 
 
-async def stream_reply_with_history(
+async def _stream_reply_with_history_legacy(
     conversation_id: str,
     user_message: str,
     on_token: Callable[[str], Awaitable[None]],
@@ -917,6 +1149,7 @@ async def stream_reply_with_history(
         prepared.get("response_language") or DEFAULT_RESPONSE_LANGUAGE
     )
     analytics_reply = str(prepared.get("analytics_reply") or "").strip()
+    num_predict = get_generation_num_predict(user_message, prepared)
 
     if analytics_reply:
         await on_token(analytics_reply)
@@ -940,14 +1173,23 @@ async def stream_reply_with_history(
         strict=has_grounded_knowledge(prepared),
         knowledge_text=knowledge_text,
         response_language=response_language,
+        structured_answer_mode=bool(prepared.get("structured_answer_mode")),
     )
 
-    data = await stream_ollama_response(messages, collect_and_forward)
+    data = await stream_ollama_response(
+        messages,
+        collect_and_forward,
+        num_predict=num_predict,
+    )
     reply = "".join(reply_parts).strip()
 
     if not reply and data.get("done_reason") == "load":
         reply_parts.clear()
-        data = await stream_ollama_response(messages, collect_and_forward)
+        data = await stream_ollama_response(
+            messages,
+            collect_and_forward,
+            num_predict=max(num_predict, 1536),
+        )
         reply = "".join(reply_parts).strip()
 
     if reply and not is_bad_reply(reply):
@@ -962,7 +1204,7 @@ async def stream_reply_with_history(
     }
 
 
-def generate_reply_with_history(
+def _generate_reply_with_history_legacy(
     conversation_id: str,
     user_message: str,
     user_id: Optional[int] = None,
@@ -983,6 +1225,7 @@ def generate_reply_with_history(
         prepared.get("response_language") or DEFAULT_RESPONSE_LANGUAGE
     )
     analytics_reply = str(prepared.get("analytics_reply") or "").strip()
+    num_predict = get_generation_num_predict(user_message, prepared)
 
     if analytics_reply:
         return {
@@ -999,19 +1242,25 @@ def generate_reply_with_history(
         strict=has_grounded_knowledge(prepared),
         knowledge_text=knowledge_text,
         response_language=response_language,
+        structured_answer_mode=bool(prepared.get("structured_answer_mode")),
     )
 
-    data = call_ollama(messages)
+    data = call_ollama(messages, num_predict=num_predict)
     reply = extract_reply(data)
 
     if not reply and data.get("done_reason") == "load":
         time.sleep(1)
-        data = call_ollama(messages)
+        data = call_ollama(messages, num_predict=max(num_predict, 1536))
+        reply = extract_reply(data)
+
+    if data.get("done_reason") == "length":
+        time.sleep(1)
+        data = call_ollama(messages, num_predict=max(num_predict * 2, 2048))
         reply = extract_reply(data)
 
     if is_bad_reply(reply):
         time.sleep(1)
-        data = call_ollama(messages)
+        data = call_ollama(messages, num_predict=max(num_predict, 1536))
         retry_reply = extract_reply(data)
 
         if retry_reply and not is_bad_reply(retry_reply):
@@ -1032,17 +1281,101 @@ def generate_reply_with_history(
     }
 
 
+def generate_reply_with_history(
+    conversation_id: str,
+    user_message: str,
+    user_id: Optional[int] = None,
+    exclude_message_id: Optional[int] = None,
+    before_message_id: Optional[int] = None,
+) -> Dict[str, object]:
+    if AI_ORCHESTRATOR != "langgraph":
+        return _generate_reply_with_history_legacy(
+            conversation_id,
+            user_message,
+            user_id=user_id,
+            exclude_message_id=exclude_message_id,
+            before_message_id=before_message_id,
+        )
+
+    try:
+        from .langgraph_chat_service import generate_reply_with_langgraph
+
+        return generate_reply_with_langgraph(
+            conversation_id,
+            user_message,
+            user_id=user_id,
+            exclude_message_id=exclude_message_id,
+            before_message_id=before_message_id,
+        )
+    except Exception as exc:
+        logger.exception(
+            "LangGraph reply orchestration failed. Falling back to legacy flow: %s",
+            exc,
+        )
+        return _generate_reply_with_history_legacy(
+            conversation_id,
+            user_message,
+            user_id=user_id,
+            exclude_message_id=exclude_message_id,
+            before_message_id=before_message_id,
+        )
+
+
+async def stream_reply_with_history(
+    conversation_id: str,
+    user_message: str,
+    on_token: Callable[[str], Awaitable[None]],
+    user_id: Optional[int] = None,
+    exclude_message_id: Optional[int] = None,
+    before_message_id: Optional[int] = None,
+) -> Dict[str, object]:
+    if AI_ORCHESTRATOR != "langgraph":
+        return await _stream_reply_with_history_legacy(
+            conversation_id,
+            user_message,
+            on_token,
+            user_id=user_id,
+            exclude_message_id=exclude_message_id,
+            before_message_id=before_message_id,
+        )
+
+    try:
+        from .langgraph_chat_service import stream_reply_with_langgraph
+
+        return await stream_reply_with_langgraph(
+            conversation_id,
+            user_message,
+            on_token,
+            user_id=user_id,
+            exclude_message_id=exclude_message_id,
+            before_message_id=before_message_id,
+        )
+    except Exception as exc:
+        logger.exception(
+            "LangGraph streaming orchestration failed. Falling back to legacy flow: %s",
+            exc,
+        )
+        return await _stream_reply_with_history_legacy(
+            conversation_id,
+            user_message,
+            on_token,
+            user_id=user_id,
+            exclude_message_id=exclude_message_id,
+            before_message_id=before_message_id,
+        )
+
+
 def build_knowledge_context(knowledge_items : List[Dict]) -> str:
     if not knowledge_items:
         return ""
     
     parts = []
-    for item in knowledge_items:
+    for index, item in enumerate(knowledge_items, start=1):
         content = item.get("content", "").strip()
         metadata = item.get("metadata", {})
         title = metadata.get("title", "ไม่ระบุชื่อ")
 
-        parts.append(f"[แหล่งข้อมูล : {title}]\n{content}")
+        parts.append(f"[เคสที่ {index} | แหล่งข้อมูล : {title}]\n{content}")
 
     return "\n\n".join(parts)
 

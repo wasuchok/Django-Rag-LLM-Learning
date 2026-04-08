@@ -2,6 +2,7 @@ from django.urls import path
 from .views import (
     analyze_mt_job_card_problem_view,
     chat_with_local_model,
+    feedback_summary_view,
     health_check,
     import_mt_job_card_view,
     sync_mt_job_card_view,
@@ -35,4 +36,5 @@ urlpatterns = [
 
     path("health/", health_check, name="health-check"),
     path("system-health/", system_health_view, name="system-health"),
+    path("feedback/summary/", feedback_summary_view, name="feedback-summary"),
 ]

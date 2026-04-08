@@ -8,6 +8,7 @@ from django.db import transaction
 from ..models import KnowledgeDocument
 from .rag_service import delete_document_from_index, index_document
 from .sqlserver_service import fetch_rows
+from .term_grouping_service import build_semantic_keyword_lines
 
 SQLSERVER_CASE_FIELDS = (
     "CARD_ID",
@@ -133,6 +134,14 @@ def build_sqlserver_case_content(row: dict[str, Any]) -> str:
         sections.append(f"ไฟล์อ้างอิง: {file_path}")
     if create_date:
         sections.append(f"วันที่บันทึก: {create_date}")
+    sections.extend(
+        build_semantic_keyword_lines(
+            problem,
+            problem_cause,
+            problem_detail,
+            action,
+        )
+    )
 
     return "\n".join(sections).strip()
 

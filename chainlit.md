@@ -1,6 +1,6 @@
 # Django Local Chatbot
 
-โปรเจกต์นี้ใช้ Chainlit เป็นหน้าแชตสำหรับระบบ Django + Ollama + Chroma RAG ชุดเดิม
+โปรเจกต์นี้ใช้ Chainlit เป็นหน้าแชตสำหรับระบบ Django + Ollama + Chroma RAG ชุดเดิม โดยชั้น orchestration ของแชตใช้ `LangChain + LangGraph`
 
 สิ่งที่ทำได้จากหน้านี้:
 
@@ -24,11 +24,13 @@
 - คำตอบจาก AI แสดงแบบ streaming ทีละส่วน ทำให้รออ่านได้ทันที
 - หลังล็อกอินจะมี badge มุมบนขวาแสดง `Role: Admin` หรือ `Role: User`
 - แก้ไขคำถามล่าสุดของตัวเองได้ และระบบจะ regenerate คำตอบใหม่จากจุดนั้น
+- feedback แบบ thumbs ของ Chainlit จะถูกบันทึกลงฐานข้อมูลจริงแล้ว ใช้แทน `ตรง / ไม่ตรง` ได้
+- ระบบมี reranking หลัง retrieval และ structured answer mode สำหรับคำถามกว้างหรือมีหลายเคส เพื่อให้ตอบแม่นและเป็นหัวข้อมากขึ้น
 
 ถ้ายังไม่มีบัญชี ให้สร้างผู้ใช้จาก Django ก่อน เช่น `python manage.py createsuperuser`
 
 หน้า Login ของ Chainlit ใช้ได้ทั้ง `username` และ `email` ของบัญชี Django
 
-ค่าเริ่มต้นของโปรเจกต์ตอนนี้ใช้ `qwen3:14b` สำหรับ chat, ปิด thinking mode (`OLLAMA_THINK=false`), ตั้ง `keep_alive=15m`, จำกัด `num_predict=384`, ลด `RAG_SEARCH_TOP_K=20` เพื่อให้ตอบไวขึ้น และใช้ `nomic-embed-text-v2-moe` สำหรับ embeddings
+ค่าเริ่มต้นของโปรเจกต์ตอนนี้ใช้ `qwen3:14b` สำหรับ chat, orchestration เป็น `AI_ORCHESTRATOR=langgraph`, ปิด thinking mode (`OLLAMA_THINK=false`), ตั้ง `keep_alive=15m`, เพิ่ม `num_predict=1536`, ใช้ `RAG_SEARCH_TOP_K=30` เพื่อให้ดึงเคสมาอ้างอิงได้มากขึ้น และใช้ `nomic-embed-text-v2-moe` สำหรับ embeddings
 
 ถ้าพร้อมแล้ว ล็อกอินและพิมพ์คำถามได้เลย ระบบรองรับคำตอบภาษาไทย อังกฤษ และญี่ปุ่น โดยประวัติห้องสนทนาจะอยู่ที่ sidebar ด้านซ้ายของหน้าจอ

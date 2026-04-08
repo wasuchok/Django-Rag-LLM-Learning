@@ -9,6 +9,7 @@ from django.db import transaction
 from ..models import KnowledgeDocument
 from .rag_service import delete_document_from_index, index_document
 from .sqlserver_service import fetch_rows
+from .term_grouping_service import build_semantic_keyword_lines
 
 SQLSERVER_JOB_CARD_FIELDS = (
     "ID",
@@ -162,6 +163,16 @@ def build_sqlserver_job_card_content(row: dict[str, Any]) -> str:
     sections.insert(
         4 if len(sections) >= 4 else len(sections),
         f"ผลกระทบทางด้านคุณภาพ: {_impact_quality_label(row.get('impact_quality'))}",
+    )
+    sections.extend(
+        build_semantic_keyword_lines(
+            _normalize_text_value(row.get("Description")),
+            _normalize_text_value(row.get("Problem")),
+            _normalize_text_value(row.get("Problem_Cause")),
+            _normalize_text_value(row.get("Problem_detail")),
+            _normalize_text_value(row.get("Position_name")),
+            _normalize_text_value(row.get("REPAIR_DETAIL")),
+        )
     )
 
     return "\n".join(item for item in sections if item).strip()

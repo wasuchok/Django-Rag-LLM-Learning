@@ -2,3 +2,6 @@ __pycache__/
 *.py[cod]
 .chainlit/
 .venv312/
+venv/
+db.sqlite3
+chroma_data/

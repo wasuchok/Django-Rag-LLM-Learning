@@ -7,6 +7,7 @@ from rest_framework.response import Response
 
 from .models import ChatMessage, KnowledgeDocument
 from .services.chat_service import generate_and_store_reply
+from .services.feedback_service import build_feedback_summary
 from .services.knowledge_access_service import (
     get_accessible_knowledge_queryset,
     get_knowledge_visibility_label,
@@ -59,6 +60,10 @@ def can_import_from_external_api(request) -> bool:
 
 def can_view_system_health(request) -> bool:
     return can_manage_all_documents(request) or has_valid_import_api_key(request)
+
+
+def can_view_feedback_summary(request) -> bool:
+    return can_manage_all_documents(request)
 
 
 def parse_optional_positive_int(value, field_name: str):
@@ -387,6 +392,26 @@ def system_health_view(request):
 
     report = get_system_health_report(include_live_checks=include_live_checks)
     return Response(report)
+
+
+@api_view(["GET"])
+def feedback_summary_view(request):
+    if not can_view_feedback_summary(request):
+        return Response(
+            {"error": "permission denied"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    try:
+        limit = parse_optional_positive_int(request.query_params.get("limit"), "limit") or 20
+    except ValueError as exc:
+        return Response(
+            {"error": str(exc)},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    summary = build_feedback_summary(limit=limit)
+    return Response(summary)
 
 
 @api_view(["POST"])
